@@ -1,0 +1,12 @@
+1) Api Controller /cart/cart-order
+2) service for cart-order - business logic for api (validation, auth, etc)
+	cart-upadate
+	cart-fetch
+3) repository for cart-order (database operations)
+	db context
+	cart-repo
+4) unit testing
+
+Dependency Injection
+Logging
+Exception Handling
