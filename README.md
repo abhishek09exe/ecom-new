@@ -11,7 +11,6 @@ Current focus:
 
 - .NET `10.0`
 - ASP.NET Core Web API
-- C# nullable reference types enabled
 
 
 ## API Endpoints (Current)
@@ -22,9 +21,7 @@ Current focus:
 
 - `POST /cart/cart-orders`
   - Current scaffold for cart order create path
-  - Uses in-memory repository for now
 
-# Local Development
 ## Prerequisites
 
 - .NET SDK 10.x preview/compatible SDK installed
@@ -69,8 +66,6 @@ curl -i -X POST "http://localhost:5000/cart/cart-orders" \
 
 - `appsettings.json`
 - `appsettings.Development.json`
-
-As the SQL-backed repository is introduced, use environment-specific configuration/secrets for database connectivity and credentials.
 
 ## Notes
 
