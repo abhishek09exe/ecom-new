@@ -1,3 +1,4 @@
+using ecom_new_api.Configuration;
 using ecom_new_api.Models.Requests;
 using ecom_new_api.Models.Responses;
 using ecom_new_api.Repositories;
@@ -11,25 +12,17 @@ namespace ecom_new_api.Services;
 public sealed class CartOrderService : ICartOrderService
 {
     private readonly ICartOrderRepository _repo;
+    private readonly ICartOrderValidationConfig _validationConfig;
     private readonly ILogger<CartOrderService> _logger;
 
-    // ── Allowed-value sets ──────────────────────────────────────────────────────
-    // TODO: REPLACE WITH ACTUAL — load these from DB / configuration at startup
-    // so they don't need a code change when the allowed values change.
-
-    private static readonly HashSet<string> AllowedSiteIds =
-        ["gsm", "webroot", "MOCK_SITE"]; // TODO: REPLACE WITH ACTUAL — from DB/config
-
-    private static readonly HashSet<string> AllowedLicenseCategoryNames =
-        ["SOHO", "SMB", "ENT", "MOCK_CATEGORY"]; // TODO: REPLACE WITH ACTUAL — from DB/config
-
-    private static readonly HashSet<int> AllowedYears =
-        [1, 2, 3]; // TODO: REPLACE WITH ACTUAL — from DB/config
-
-    public CartOrderService(ICartOrderRepository repo, ILogger<CartOrderService> logger)
+    public CartOrderService(
+        ICartOrderRepository repo,
+        ICartOrderValidationConfig validationConfig,
+        ILogger<CartOrderService> logger)
     {
-        _repo = repo;
-        _logger = logger;
+        _repo = repo ?? throw new ArgumentNullException(nameof(repo));
+        _validationConfig = validationConfig ?? throw new ArgumentNullException(nameof(validationConfig));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     // ── POST /cart/cart-orders ──────────────────────────────────────────────────
@@ -122,9 +115,8 @@ public sealed class CartOrderService : ICartOrderService
 
         if (string.IsNullOrWhiteSpace(r.SiteId))
             errors.Add("site_id is required");
-        else if (!AllowedSiteIds.Contains(r.SiteId))
+        else if (!_validationConfig.AllowedSiteIds.Contains(r.SiteId))
             errors.Add($"site_id '{r.SiteId}' is not in the allowed set");
-        // TODO: REPLACE WITH ACTUAL — AllowedSiteIds loaded from DB/config
 
         if (string.IsNullOrWhiteSpace(r.Locale))
             errors.Add("locale is required");
@@ -159,9 +151,8 @@ public sealed class CartOrderService : ICartOrderService
 
             if (string.IsNullOrWhiteSpace(item.LicenseCategoryName))
                 errors.Add($"{prefix}.license_category_name is required");
-            else if (!AllowedLicenseCategoryNames.Contains(item.LicenseCategoryName))
+            else if (!_validationConfig.AllowedLicenseCategoryNames.Contains(item.LicenseCategoryName))
                 errors.Add($"{prefix}.license_category_name '{item.LicenseCategoryName}' is not in the allowed set");
-            // TODO: REPLACE WITH ACTUAL — AllowedLicenseCategoryNames loaded from DB/config
 
             if (item.Quantity.HasValue && item.Quantity <= 0)
                 errors.Add($"{prefix}.quantity must be positive if provided");
@@ -169,9 +160,8 @@ public sealed class CartOrderService : ICartOrderService
             if (item.LicenseSeats.HasValue && item.LicenseSeats <= 0)
                 errors.Add($"{prefix}.license_seats must be positive if provided");
 
-            if (item.Years.HasValue && !AllowedYears.Contains((int)item.Years.Value))
-                errors.Add($"{prefix}.years must be in the allowed set ({string.Join(", ", AllowedYears)}) if provided");
-            // TODO: REPLACE WITH ACTUAL — AllowedYears loaded from DB/config
+            if (item.Years.HasValue && !_validationConfig.AllowedYears.Contains((int)item.Years.Value))
+                errors.Add($"{prefix}.years must be in the allowed set ({string.Join(", ", _validationConfig.AllowedYears)}) if provided");
 
             if (item.ItemHierarchyId.HasValue && item.ItemHierarchyId is not (1 or 2))
                 errors.Add($"{prefix}.item_hierarchy_id must be 1 or 2 if provided");

@@ -1,3 +1,4 @@
+using ecom_new_api.Data.Entities;
 using ecom_new_api.Models.Requests;
 using ecom_new_api.Models.Responses;
 
@@ -19,7 +20,382 @@ public sealed class MockCartOrderRepository : ICartOrderRepository
     private static int _nextId = 1000;
     private static readonly Dictionary<string, CartOrderResponse> _store = new();
 
-    // ── Write path ──────────────────────────────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1: Simple Lookups (Mock implementations for development)
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Mock: Partner lookup by key — returns null (no partner in mock)
+    /// </summary>
+    public Task<int?> LookupPartnerIdByKeyAsync(
+        string? partnerKey,
+        CancellationToken ct = default)
+    {
+        // Mock: always returns null (no partners in mock environment)
+        return Task.FromResult<int?>(null);
+    }
+
+    /// <summary>
+    /// Mock: Currency lookup by code — returns default currency (1 = USD)
+    /// </summary>
+    public Task<int?> LookupCurrencyIdByCodeAsync(
+        string? currencyCode,
+        CancellationToken ct = default)
+    {
+        // Mock: USD = 1 (default), EUR = 2, AUD = 3, etc.
+        // In production, this queries the currency table
+        return Task.FromResult<int?>(currencyCode?.ToUpper() switch
+        {
+            "USD" => 1,
+            "EUR" => 2,
+            "AUD" => 3,
+            "GBP" => 4,
+            "CAD" => 5,
+            _ => null  // unknown currency
+        });
+    }
+
+    /// <summary>
+    /// Mock: Vendor order code existence check — checks in-memory store
+    /// </summary>
+    public Task<bool> VendorOrderCodeExistsAsync(
+        string vendorOrderCode,
+        CancellationToken ct = default)
+    {
+        // Mock: check if code exists in our in-memory store
+        return Task.FromResult(_store.ContainsKey(vendorOrderCode));
+    }
+
+    /// <summary>
+    /// Mock: Get partner entity — returns null (no partners in mock)
+    /// </summary>
+    public Task<PartnerEntity?> GetPartnerByIdAsync(
+        int partnerId,
+        CancellationToken ct = default)
+    {
+        // Mock: no partners in mock environment
+        return Task.FromResult<PartnerEntity?>(null);
+    }
+
+    /// <summary>
+    /// Mock: Get currency entity — returns mock currency
+    /// </summary>
+    public Task<CurrencyEntity?> GetCurrencyByIdAsync(
+        int currencyId,
+        CancellationToken ct = default)
+    {
+        // Mock: return a simple currency entity
+        var currency = new CurrencyEntity
+        {
+            CurrencyId = currencyId,
+            CurrencyCode = currencyId switch
+            {
+                1 => "USD",
+                2 => "EUR",
+                3 => "AUD",
+                4 => "GBP",
+                5 => "CAD",
+                _ => "UNKNOWN"
+            },
+            CurrencyName = currencyId switch
+            {
+                1 => "US Dollar",
+                2 => "Euro",
+                3 => "Australian Dollar",
+                4 => "British Pound",
+                5 => "Canadian Dollar",
+                _ => "Unknown Currency"
+            }
+        };
+        return Task.FromResult<CurrencyEntity?>(currency);
+    }
+
+    /// <summary>
+    /// Mock: Get product entity — returns null (limited product data in mock)
+    /// </summary>
+    public Task<ProductEntity?> GetProductByIdAsync(
+        int productId,
+        CancellationToken ct = default)
+    {
+        // Mock: return a simple product entity for testing
+        if (productId <= 0)
+            return Task.FromResult<ProductEntity?>(null);
+
+        var product = new ProductEntity
+        {
+            ProductId = productId,
+            ProductDescription = $"Mock Product {productId}",
+            ProductTypeId = 1,
+            ProductFamilyId = 1,
+            ProductLineId = 1,
+            ProductLifecycleId = 1,
+            LicenseKeycodeTypeId = 1,
+            LicenseCategoryId = 1
+        };
+        return Task.FromResult<ProductEntity?>(product);
+    }
+
+    /// <summary>
+    /// Mock: Batch get products with categories — optimized mock implementation
+    /// </summary>
+    public Task<Dictionary<int, ProductEntity>> GetProductsByIdBatchAsync(
+        IEnumerable<int> productIds,
+        CancellationToken ct = default)
+    {
+        var result = new Dictionary<int, ProductEntity>();
+
+        if (productIds is null)
+            return Task.FromResult(result);
+
+        foreach (var productId in productIds.Distinct())
+        {
+            if (productId <= 0)
+                continue;
+
+            var product = new ProductEntity
+            {
+                ProductId = productId,
+                ProductDescription = $"Mock Product {productId}",
+                ProductTypeId = 1,
+                ProductFamilyId = 1,
+                ProductLineId = 1,
+                ProductLifecycleId = 1,
+                LicenseKeycodeTypeId = 1,
+                LicenseCategoryId = 1,
+                LicenseCategory = new LicenseCategoryEntity
+                {
+                    LicenseCategoryId = 1,
+                    LicenseCategoryName = "SMB",
+                    LicenseCategoryDescription = "Small/Medium Business"
+                }
+            };
+
+            result[productId] = product;
+        }
+
+        return Task.FromResult(result);
+    }
+
+    /// <summary>
+    /// Mock: Get license category entity — returns default category
+    /// </summary>
+    public Task<LicenseCategoryEntity?> GetLicenseCategoryByIdAsync(
+        int licenseCategoryId,
+        CancellationToken ct = default)
+    {
+        // Mock: return a simple license category
+        if (licenseCategoryId <= 0)
+            return Task.FromResult<LicenseCategoryEntity?>(null);
+
+        var category = new LicenseCategoryEntity
+        {
+            LicenseCategoryId = licenseCategoryId,
+            LicenseCategoryName = licenseCategoryId switch
+            {
+                1 => "SOHO",
+                2 => "SMB",
+                3 => "ENT",
+                4 => "OTSF",
+                5 => "CBEP",
+                _ => "UNKNOWN"
+            },
+            LicenseCategoryDescription = null
+        };
+        return Task.FromResult<LicenseCategoryEntity?>(category);
+    }
+
+    /// <summary>
+    /// Mock: Get license by keycode — returns mock license with all profile data
+    /// </summary>
+    public Task<LicenseEntity?> GetLicenseByKeycodeAsync(
+        string keycode,
+        CancellationToken ct = default)
+    {
+        // Mock: return mock license data
+        if (string.IsNullOrWhiteSpace(keycode))
+            return Task.FromResult<LicenseEntity?>(null);
+
+        var license = new LicenseEntity
+        {
+            LicenseId = 1001,
+            Keycode = keycode,
+            LicenseCategoryId = 2,  // SMB
+            LicenseStatus = "ACTIVE",
+            LicenseSeats = 5,
+            ExpirationDate = DateTime.UtcNow.AddYears(1),
+            AutorenewCycle = 1,
+            RetentionModelId = 1,
+            RetentionTerm = 1,
+            UsagePricingModelId = null,
+            ProductPlatformId = 1,
+            LicenseKeycodeTypeId = 1,
+            LicenseDistributionMethodId = 1,
+            StorageGb = null,
+            CategoryTypeName = "full",
+            ProductLineId = 1,
+            LicenseCategory = new LicenseCategoryEntity
+            {
+                LicenseCategoryId = 2,
+                LicenseCategoryName = "SMB",
+                LicenseCategoryDescription = "Small/Medium Business"
+            }
+        };
+        return Task.FromResult<LicenseEntity?>(license);
+    }
+
+    /// <summary>
+    /// Mock: Get license message — returns null (no next process date in mock)
+    /// </summary>
+    public Task<LicenseMessageEntity?> GetLicenseMessageByIdAsync(
+        int licenseId,
+        CancellationToken ct = default)
+    {
+        // Mock: return next process date (30 days from now for billing conversion)
+        var message = new LicenseMessageEntity
+        {
+            LicenseMessageId = 1,
+            LicenseId = licenseId,
+            MessageTypeId = 1,
+            NextProcessDate = DateTime.UtcNow.AddDays(30),
+            CreatedDate = DateTime.UtcNow,
+            ModifiedDate = DateTime.UtcNow
+        };
+        return Task.FromResult<LicenseMessageEntity?>(message);
+    }
+
+    /// <summary>
+    /// Mock: Get locale mapping — returns standard locale mappings
+    /// </summary>
+    public Task<LocaleLanguageLocationEntity?> GetLocaleByCodeAsync(
+        string locale,
+        CancellationToken ct = default)
+    {
+        // Mock: map common locales to language/location codes
+        if (string.IsNullOrWhiteSpace(locale))
+            return Task.FromResult<LocaleLanguageLocationEntity?>(null);
+
+        var mapping = locale.ToLower() switch
+        {
+            "en_us" => ("en", "US"),
+            "en_gb" => ("en", "GB"),
+            "de_de" => ("de", "DE"),
+            "fr_fr" => ("fr", "FR"),
+            "ja_jp" => ("ja", "JP"),
+            _ => ("en", "US")  // default to en_US
+        };
+
+        var entity = new LocaleLanguageLocationEntity
+        {
+            LocaleLanguageLocationId = 1,
+            Locale = locale,
+            LanguageCode = mapping.Item1,
+            LocationCode = mapping.Item2
+        };
+        return Task.FromResult<LocaleLanguageLocationEntity?>(entity);
+    }
+
+    /// <summary>
+    /// Mock: Get product line by license category and locale
+    /// </summary>
+    public Task<LicenseCategoryProductLineEntity?> GetProductLineByLicenseCategoryAndLocaleAsync(
+        int licenseCategoryId,
+        string? languageCode,
+        string? locationCode,
+        CancellationToken ct = default)
+    {
+        // Mock: return default product line (1) for all categories
+        var productLine = new LicenseCategoryProductLineEntity
+        {
+            LicenseCategoryProductLineId = 1,
+            LicenseCategoryId = licenseCategoryId,
+            ProductLineId = 1,
+            LanguageCode = languageCode ?? "en",
+            LocationCode = locationCode ?? "US"
+        };
+        return Task.FromResult<LicenseCategoryProductLineEntity?>(productLine);
+    }
+
+    /// <inheritdoc/>
+    /// Mock: Checks if a billing model is in the utility set. Always returns false in mock.
+    public Task<bool> IsUtilityBillingModelAsync(
+        int billingModelId,
+        CancellationToken ct = default)
+    {
+        // Mock: no utility models in mock environment
+        return Task.FromResult(false);
+    }
+
+    /// <inheritdoc/>
+    /// Mock: Resolves license_attribute_id from billing model value.
+    /// Returns a deterministic value based on the input for testing.
+    public Task<int?> GetLicenseAttributeIdByValueAsync(
+        int billingModelId,
+        CancellationToken ct = default)
+    {
+        // Mock: simple mapping for testing
+        // Common billing models: 110=annual, 12=monthly, etc.
+        // Assume attribute IDs are similar values for mock purposes
+        return Task.FromResult<int?>(billingModelId > 0 ? billingModelId : null);
+    }
+
+    /// <summary>Mock implementation of location-based billing model lookup.</summary>
+    public Task<(int? BillingModelId, int? LicenseAttributeId)?> GetLocationBasedBillingModelAsync(
+        int productLineId,
+        string? locationCode,
+        IEnumerable<int>? licenseCategoryIds,
+        CancellationToken ct = default)
+    {
+        // Mock: return null (no location-specific override in mock data)
+        return Task.FromResult<(int?, int?)?>(null);
+    }
+
+    /// <summary>Mock implementation of business default billing model lookup.</summary>
+    public Task<(int? LicenseAttributeId, int? BillingModelId)?> GetBusinessDefaultBillingModelAsync(
+        CancellationToken ct = default)
+    {
+        // Mock: return hardcoded business default (110 = annual)
+        return Task.FromResult<(int?, int?)?>(((int?)11, (int?)110));
+    }
+
+    /// <summary>Mock implementation of storage GB calculation.</summary>
+    public Task<int?> GetItemStorageGbAsync(
+        int quantity,
+        string licenseCategoryName,
+        byte? usagePricingModelId,
+        CancellationToken ct = default)
+    {
+        // Mock: simple defaults based on usage model
+        // Capacity model (2) = 100GB, others = 10GB
+        int? result = usagePricingModelId == 2 ? 100 : 10;
+        return Task.FromResult(result);
+    }
+
+    /// <summary>Mock implementation of product ID resolution using fn_product_select_profile.</summary>
+    public Task<int?> ResolveProductIdAsync(
+        int productLineId,
+        int licenseCategoryId,
+        int? years,
+        int quantity,
+        int? storageGb,
+        int durationDays,
+        int? productTypeId,
+        int? licenseKeycodeTypeId,
+        byte? usagePricingModelId,
+        byte? retentionModelId,
+        byte? productPlatformId,
+        string? sapMaterialNumber,
+        CancellationToken ct = default)
+    {
+        // Mock: return a deterministic product ID based on inputs
+        // In real scenario, fn_product_select_profile would determine this
+        // For testing, use a simple hash/formula: productLineId * 1000 + licenseCategoryId
+        var mockProductId = (productLineId * 1000) + licenseCategoryId;
+        return Task.FromResult<int?>(mockProductId);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 2+: Write Methods (Mock implementations)
+    // ══════════════════════════════════════════════════════════════════════════════════
 
     /// <inheritdoc/>
     /// TODO: REPLACE WITH ACTUAL

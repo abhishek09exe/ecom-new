@@ -133,4 +133,31 @@ public sealed class CartOrdersController : ControllerBase
                     ApiResponse<T>.Failure(result.ErrorMessage ?? "An unexpected error occurred"))
         };
     }
+
+    // ── GET / (Health Check) ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Health check endpoint. Returns basic API information.
+    /// Access at: http://localhost:5193/
+    /// </summary>
+    [HttpGet("/")]
+    [ProducesResponseType(typeof(object), StatusCodes.Status200OK)]
+    public IActionResult HealthCheck()
+    {
+        return Ok(new
+        {
+            status = "healthy",
+            service = "ecom-new-api",
+            version = "1.0.0",
+            environment = HttpContext.RequestServices.GetService(typeof(IHostEnvironment)) is IHostEnvironment env ? env.EnvironmentName : "Unknown",
+            timestamp = DateTime.UtcNow,
+            swagger = "http://localhost:5193/swagger/",
+            endpoints = new
+            {
+                createCartOrder = "POST /cart/cart-orders",
+                getLicenseOptions = "GET /license-options"
+            }
+        });
+    }
 }
+
