@@ -19,6 +19,9 @@ namespace ecom_new_api.Repositories;
 /// </summary>
 public class CartOrderRepository : ICartOrderRepository
 {
+    private const int StubBusinessBillingModel = 110;
+    private const int StubBusinessLicenseAttributeId = 11;
+
     private readonly CartOrderDbContext _db;
     private readonly ILogger<CartOrderRepository> _logger;
 
@@ -710,20 +713,14 @@ public class CartOrderRepository : ICartOrderRepository
             if (categoryList.Count == 0)
                 return null;
 
-            // TODO: REPLACE WITH ACTUAL EF Core query
-            // SELECT TOP 1 lav.license_attribute_license_value, lv.license_attribute_id
-            // FROM license_category_product_line pl
-            // INNER JOIN license_category_product_line_license_attribute_license_value lav
-            //   ON pl.license_category_product_line_id = lav.license_category_product_line_id
-            // INNER JOIN license_attribute_license_value lv
-            //   ON lv.license_attribute_license_value = lav.license_attribute_license_value
-            // WHERE pl.product_line_id = @productLineId
-            //   AND pl.location_code = @locationCode
-            //   AND pl.license_category_id IN (...)
-
+            // Temporary stub to preserve SQL control flow while data access is unavailable.
+            // The required mapping table (license_category_product_line_license_attribute_license_value)
+            // is not yet modeled in EF Core and this project currently has no database access.
             _logger.LogDebug(
-                "GetLocationBasedBillingModelAsync: placeholder - returning null (deferred to EF implementation)");
-            return null;  // Placeholder
+                "GetLocationBasedBillingModelAsync: using temporary stub values BillingModelId={BillingModelId}, LicenseAttributeId={LicenseAttributeId}",
+                StubBusinessBillingModel, StubBusinessLicenseAttributeId);
+            return await Task.FromResult<(int? BillingModelId, int? LicenseAttributeId)?>(
+                (StubBusinessBillingModel, StubBusinessLicenseAttributeId));
         }
         catch (Exception ex)
         {
@@ -744,24 +741,14 @@ public class CartOrderRepository : ICartOrderRepository
 
         try
         {
-            // TODO: REPLACE WITH ACTUAL EF Core query
-            // SELECT TOP 1 license_attribute_id, license_attribute_license_value
-            // FROM license_attribute_license_value
-            // WHERE license_attribute_license_value IN (
-            //   SELECT license_attribute_license_value
-            //   FROM dbo.fn_app_config_select_key_values('DEFAULT_BUSINESS_BILLING_MODEL', 'GENERAL')
-            // )
-            // ORDER BY license_attribute_license_value
-            //
-            // For now, hardcoded placeholder: assume 110 = annual is the default
-            var defaultBillingModel = 110;  // Placeholder
-            var defaultAttributeId = 11;    // Placeholder: 110 / 10
-            
+            // TODO: Replace this stub with DEFAULT_BUSINESS_BILLING_MODEL query once
+            // database access is available and required tables/config are modeled in EF Core.
             _logger.LogDebug(
-                "GetBusinessDefaultBillingModelAsync: placeholder returns ({AttrId}, {BillingModel})",
-                defaultAttributeId, defaultBillingModel);
-            
-            return await Task.FromResult((defaultAttributeId, defaultBillingModel));
+                "GetBusinessDefaultBillingModelAsync: using temporary stub values LicenseAttributeId={LicenseAttributeId}, BillingModelId={BillingModelId}",
+                StubBusinessLicenseAttributeId, StubBusinessBillingModel);
+
+            return await Task.FromResult<(int? LicenseAttributeId, int? BillingModelId)?>(
+                (StubBusinessLicenseAttributeId, StubBusinessBillingModel));
         }
         catch (Exception ex)
         {

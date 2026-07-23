@@ -1481,29 +1481,32 @@ public class ProductDeterminationService
 
         _logger.LogDebug("Starting Section 2.5: Marking storage-based upgrades");
 
-        var storageItems = preparedModel.Items
-            .Where(item => item.StorageGb.HasValue &&
-                          (!item.ProductTypeId.HasValue || item.ProductTypeId.Value == 0))
-            .ToList();
+        var updatedCount = 0;
 
-        if (storageItems.Count == 0)
+        foreach (var item in preparedModel.Items)
         {
-            _logger.LogInformation("No items with storage without product_type; skipping");
-            return preparedModel;
-        }
+            if (!item.StorageGb.HasValue || item.ProductTypeId.HasValue)
+            {
+                continue;
+            }
 
-        _logger.LogDebug("Found {ItemCount} items with storage to mark as upgrade", storageItems.Count);
-
-        foreach (var item in storageItems)
-        {
             _logger.LogDebug("Section 2.5: Item {LineItem} storage={Storage}GB marked as upgrade",
                 item.LineItem, item.StorageGb);
 
             item.ProductTypeId = 3;
+            updatedCount++;
 
             _logger.LogInformation("Section 2.5: Item {LineItem} updated: ProductTypeId=3 (storage upgrade)",
                 item.LineItem);
         }
+
+        if (updatedCount == 0)
+        {
+            _logger.LogInformation("No items with storage and null product_type; skipping");
+            return preparedModel;
+        }
+
+        _logger.LogDebug("Section 2.5: Updated {ItemCount} items", updatedCount);
 
         return preparedModel;
     }
@@ -1579,6 +1582,131 @@ public class ProductDeterminationService
                 "Section 2.1.2: Item {LineItem} (WIFI) expiration_date updated: {NewDate:O}",
                 item.LineItem, item.ExpirationDate);
         }
+
+        return preparedModel;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 2.4.2: Update ProductId for Business Product Line (300)
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// SECTION 2.4.2: Update product_id for business product line 300.
+    ///
+    /// SQL equivalent:
+    /// <code>
+    /// IF @product_line_id IN (300)
+    /// BEGIN
+    ///   UPDATE i
+    ///   SET i.product_id = f.product_id
+    ///   FROM @item_table i
+    ///   INNER JOIN license_category lc ON lc.license_category_name = i.license_category_name
+    ///   CROSS APPLY dbo.fn_product_select_profile(...)
+    /// END
+    /// </code>
+    ///
+    /// Control flow:
+    /// - Executes only when <c>preparedModel.ProductLineId == 300</c>
+    /// - For each item, resolves <c>license_category_id</c> from already-loaded model data
+    /// - Computes <c>durationDays</c> as <c>ExpirationDate - StartDate</c>
+    /// - Delegates product selection to repository
+    /// - Replaces <c>item.ProductId</c> only when repository returns a value
+    /// - Leaves <c>item.ProductId</c> unchanged when null is returned
+    /// </summary>
+    /// <param name="preparedModel">Prepared model containing items and product-line context.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The updated prepared model.</returns>
+    public async Task<CartOrderPreparedModel> DetermineBusinessProductIdsAsync(
+        CartOrderPreparedModel preparedModel,
+        CancellationToken ct = default)
+    {
+        if (preparedModel is null)
+        {
+            throw new ArgumentNullException(nameof(preparedModel));
+        }
+
+        // SQL guard: IF @product_line_id IN (300)
+        if (preparedModel.ProductLineId != 300)
+        {
+            _logger.LogDebug(
+                "Section 2.4.2: ProductLineId={ProductLineId}; skipping business product_id update",
+                preparedModel.ProductLineId);
+            return preparedModel;
+        }
+
+        if (preparedModel.Items.Count == 0)
+        {
+            _logger.LogInformation("Section 2.4.2: No items available; skipping business product_id update");
+            return preparedModel;
+        }
+
+        _logger.LogDebug(
+            "Section 2.4.2: Processing {ItemCount} items for ProductLineId=300 product_id resolution",
+            preparedModel.Items.Count);
+
+        foreach (var item in preparedModel.Items)
+        {
+            int? licenseCategoryId = item.LicenseCategoryId;
+
+            // Resolve category ID from loaded product metadata if item does not carry it.
+            if (!licenseCategoryId.HasValue
+                && preparedModel.Products.TryGetValue(item.ProductId, out var productContext))
+            {
+                licenseCategoryId = productContext.LicenseCategoryId;
+            }
+
+            if (!licenseCategoryId.HasValue)
+            {
+                _logger.LogDebug(
+                    "Section 2.4.2: LineItem={LineItem} missing LicenseCategoryId; leaving ProductId unchanged ({ProductId})",
+                    item.LineItem, item.ProductId);
+                continue;
+            }
+
+            if (!item.StartDate.HasValue || !item.ExpirationDate.HasValue)
+            {
+                _logger.LogDebug(
+                    "Section 2.4.2: LineItem={LineItem} missing StartDate/ExpirationDate; leaving ProductId unchanged ({ProductId})",
+                    item.LineItem, item.ProductId);
+                continue;
+            }
+
+            var durationDays = (int)(item.ExpirationDate.Value.Date - item.StartDate.Value.Date).TotalDays;
+
+            // TODO: Repository.ResolveProductIdAsync must be replaced with the actual
+            // SQL fn_product_select_profile implementation when the function definition is available.
+            var resolvedProductId = await _repository.ResolveProductIdAsync(
+                productLineId: 300,
+                licenseCategoryId: licenseCategoryId.Value,
+                years: item.Years.HasValue ? (int)item.Years.Value : (int?)null,
+                quantity: item.Quantity,
+                storageGb: item.StorageGb,
+                durationDays: durationDays,
+                productTypeId: item.ProductTypeId,
+                licenseKeycodeTypeId: item.LicenseKeycodeTypeId,
+                usagePricingModelId: item.UsagePricingModelId,
+                retentionModelId: item.RetentionModelId,
+                productPlatformId: item.ProductPlatformId,
+                sapMaterialNumber: null,
+                ct: ct);
+
+            if (resolvedProductId.HasValue)
+            {
+                _logger.LogDebug(
+                    "Section 2.4.2: LineItem={LineItem} ProductId updated {OldProductId} -> {NewProductId}",
+                    item.LineItem, item.ProductId, resolvedProductId.Value);
+                item.ProductId = resolvedProductId.Value;
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "Section 2.4.2: LineItem={LineItem} repository returned null; ProductId unchanged ({ProductId})",
+                    item.LineItem, item.ProductId);
+            }
+        }
+
+        // SQL execution order: run Section 2.5 immediately after Section 2.4.x product selection.
+        preparedModel = await DetermineStorageBasedProductTypeAsync(preparedModel, ct);
 
         return preparedModel;
     }

@@ -141,6 +141,9 @@ public sealed class CartOrderItemResponse
     /// <summary>cart_order_item.license_attribute_license_value (billing model)</summary>
     public int? LicenseAttributeLicenseValue { get; init; }
 
+    /// <summary>license_attribute_license_value.license_attribute_id</summary>
+    public int? LicenseAttributeId { get; init; }
+
     /// <summary>license_attribute_license_value.license_attribute_license_value_description</summary>
     public string? LicenseAttributeLicenseValueDescription { get; init; }
 

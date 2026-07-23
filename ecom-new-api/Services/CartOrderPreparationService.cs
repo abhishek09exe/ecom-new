@@ -34,6 +34,202 @@ public class CartOrderPreparationService
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
+    /// <summary>
+    /// Section 1 orchestration entry point.
+    ///
+    /// Executes the existing Section 1 preparation pipeline and returns a fully populated
+    /// <see cref="CartOrderPreparedModel"/> for downstream Section 2 processing.
+    /// </summary>
+    /// <param name="request">Incoming cart order create request.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Prepared model containing context, license, items, product metadata, and fallbacks.</returns>
+    public async Task<CartOrderPreparedModel> PrepareCartOrderAsync(
+        CartOrderCreateRequest request,
+        CancellationToken ct = default)
+    {
+        if (request is null)
+        {
+            throw new ArgumentNullException(nameof(request));
+        }
+
+        _logger.LogDebug("Starting Section 1 orchestration: PrepareCartOrderAsync");
+
+        // 1) Context + account/currency resolution
+        var userContext = LoadContextFromRequest(request);
+        await ResolvePartnerIdAsync(userContext, ct);
+        await ResolveCurrencyIdAsync(userContext, ct);
+        await ApplyCurrencyFallbackAsync(userContext, ct);
+
+        // 2) Build bundle/item contexts from request payload via existing Section 1 parsers
+        var firstItemWithBundleData = request.Items.FirstOrDefault(i =>
+            !string.IsNullOrWhiteSpace(i.Keycode)
+            || i.LicenseAttributeLicenseValue.HasValue
+            || i.LicenseKeycodeTypeId.HasValue
+            || i.OrderItemUpdateTypeId.HasValue
+            || i.ProductPricingLevelId.HasValue
+            || i.CartDiscountId.HasValue);
+
+        var bundlePayload = new BundleJsonPayload
+        {
+            Keycode = firstItemWithBundleData?.Keycode ?? request.Key,
+            LicenseAttributeLicenseValue = firstItemWithBundleData?.LicenseAttributeLicenseValue,
+            LicenseKeycodeTypeId = firstItemWithBundleData?.LicenseKeycodeTypeId,
+            OrderItemUpdateTypeId = firstItemWithBundleData?.OrderItemUpdateTypeId ?? 1,
+            ProductPricingLevelId = firstItemWithBundleData?.ProductPricingLevelId,
+            CartDiscountId = firstItemWithBundleData?.CartDiscountId ?? request.CartDiscountId,
+            MessageKey = request.Key
+        };
+
+        var bundleJson = JsonSerializer.Serialize(bundlePayload, BundleJsonPayload.SerializerOptions);
+        var bundle = await ParseBundleJsonAsync(bundleJson, ct) ?? new BundleContext();
+        if (bundle.LicenseAttributeLicenseValue.HasValue)
+        {
+            bundle.HasUtility = await IsUtilityBillingModelAsync(bundle.LicenseAttributeLicenseValue, ct);
+        }
+
+        var itemPayloads = request.Items.Select(i => new ItemJsonPayload
+        {
+            ProductId = i.ProductId,
+            LicenseCategoryName = i.LicenseCategoryName,
+            Quantity = i.Quantity ?? 1,
+            LicenseSeats = i.LicenseSeats,
+            StorageGb = i.StorageGb,
+            Years = i.Years,
+            StartDate = i.StartDate,
+            ExpirationDate = i.ExpirationDate,
+            VendorExpirationDate = i.VendorExpirationDate.HasValue
+                ? i.VendorExpirationDate.Value.ToDateTime(TimeOnly.MinValue)
+                : null,
+            Keycode = i.Keycode,
+            ItemHierarchyId = i.ItemHierarchyId,
+            CartItemBundleId = i.CartItemBundleId,
+            LicenseAttributeLicenseValue = i.LicenseAttributeLicenseValue,
+            UsagePricingModelId = i.UsagePricingModelId,
+            RetentionModelId = i.RetentionModelId,
+            RetentionTerm = i.RetentionTerm,
+            ProductPlatformId = i.ProductPlatformId,
+            LicenseKeycodeTypeId = i.LicenseKeycodeTypeId,
+            AmendedContract = i.AmendedContract,
+        }).ToList();
+
+        var itemJson = JsonSerializer.Serialize(itemPayloads, ItemJsonPayload.SerializerOptions);
+        var items = await ParseItemJsonAsync(itemJson, ct);
+        ValidateOtsfRetentionModel(items);
+
+        // 3) Optional existing cart/item context
+        Models.Responses.CartOrderResponse? cart = null;
+        if (!string.IsNullOrWhiteSpace(userContext.VendorOrderCode))
+        {
+            cart = await LoadCartByVendorOrderCodeAsync(userContext.VendorOrderCode, ct);
+        }
+
+        var existingItems = await LoadExistingItemsAsync(cart, ct);
+
+        // 4) License + locale + product metadata loading
+        var licenseKeycode = bundle.Keycode
+            ?? request.Key
+            ?? request.Items.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Keycode))?.Keycode;
+
+        var license = await LoadLicenseByKeycodeAsync(licenseKeycode, ct);
+
+        if (license is not null)
+        {
+            license.LicenseAttributeLicenseValueFromLicense = license.LicenseAttributeLicenseValue;
+            license.LicenseAttributeLicenseValue = bundle.LicenseAttributeLicenseValue ?? license.LicenseAttributeLicenseValue;
+            license.LicenseKeycodeTypeId = ApplyLicenseKeycodeTypeFallback(bundle, license);
+        }
+
+        var products = await PrepareProductsFromItemsAsync(items, ct);
+        EnrichItemsWithLicenseCategoryId(items, products, license);
+        NormalizeDownRevCategoryNames(items, license);
+
+        var (languageCode, locationCode) = await LoadLocaleCodesByLocaleAsync(userContext.Locale, ct);
+
+        int? productLineId = null;
+        var firstLicenseCategoryId = items.Select(i => i.LicenseCategoryId).FirstOrDefault(x => x.HasValue);
+        if (firstLicenseCategoryId.HasValue)
+        {
+            productLineId = await LoadProductLineByLicenseCategoryAsync(
+                firstLicenseCategoryId.Value,
+                languageCode,
+                locationCode,
+                ct);
+        }
+
+        if (!productLineId.HasValue)
+        {
+            productLineId = products.Values
+                .Select(p => p.ProductLineId)
+                .FirstOrDefault(x => x.HasValue);
+        }
+
+        productLineId = RemapProductLineId(productLineId);
+
+        // 5) Billing-model and attribute fallback chain
+        int? globalBillingModelId = bundle.LicenseAttributeLicenseValue;
+        int? globalLicenseAttributeId = await ResolveLicenseAttributeIdAsync(globalBillingModelId, ct);
+
+        var fallbackSeed = new CartOrderPreparedModel
+        {
+            ExistingItems = existingItems
+        };
+
+        (globalBillingModelId, globalLicenseAttributeId) = ApplyGlobalBillingModelFallback(
+            fallbackSeed,
+            globalBillingModelId,
+            globalLicenseAttributeId);
+
+        globalBillingModelId = ApplyBusinessBillingModelFallback(productLineId, globalBillingModelId);
+
+        var licenseCategoryIds = items
+            .Where(i => i.LicenseCategoryId.HasValue)
+            .Select(i => i.LicenseCategoryId!.Value)
+            .Distinct()
+            .ToList();
+
+        (globalBillingModelId, globalLicenseAttributeId) = await ApplyLocationBasedBillingModelAsync(
+            productLineId,
+            locationCode,
+            licenseCategoryIds,
+            globalBillingModelId,
+            globalLicenseAttributeId,
+            ct);
+
+        // 6) Item-level enrichments
+        EnrichBillingModelFallback(items, ct);
+        EnrichUsagePricingModel(items, license);
+        EnrichRetentionModel(items, license);
+        EnrichProductPlatform(items, license);
+
+        var sfdcOverrides = BuildSfdcUnitOverrides(userContext.SiteId, items, license);
+        CalculateUpgradeLicenseSeats(items, license, sfdcOverrides);
+        ApplyMonthlyToAnnualConversion(items, license, bundle.LicenseAttributeLicenseValue, nextProcessDate: null);
+        await EnrichDefaultStorageGbWithRepositoryAsync(items, ct);
+
+        // 7) Final aggregate model
+        var preparedModel = AssemblePreparedModel(cart, userContext, license, items, products);
+        preparedModel.ExistingItems = existingItems;
+        preparedModel.SiteId = userContext.SiteId;
+        preparedModel.ProductLineId = productLineId;
+        preparedModel.BillingModelId = bundle.LicenseAttributeLicenseValue;
+        preparedModel.GlobalBillingModelId = globalBillingModelId;
+        preparedModel.LanguageCode = languageCode;
+        preparedModel.LocationCode = locationCode;
+        preparedModel.LicenseId = license?.LicenseId;
+        preparedModel.NextProcessDate = null;
+        preparedModel.PartnerId = userContext.PartnerId;
+        preparedModel.HasUtility = bundle.HasUtility;
+
+        _logger.LogInformation(
+            "PrepareCartOrderAsync complete: Items={ItemCount}, ExistingItems={ExistingCount}, ProductLine={ProductLine}, BillingModel={BillingModel}",
+            preparedModel.Items.Count,
+            preparedModel.ExistingItems.Count,
+            preparedModel.ProductLineId,
+            preparedModel.GlobalBillingModelId);
+
+        return preparedModel;
+    }
+
     // ══════════════════════════════════════════════════════════════════════════════════
     // SECTION 1.1: Load Cart
     // ══════════════════════════════════════════════════════════════════════════════════
@@ -1097,6 +1293,7 @@ public class CartOrderPreparationService
                 // Populate billing model directly from the response row so that
                 // Section 1.11 attribute-from-primary fallback and Section 2.1 billing
                 // comparisons have the correct per-item value without extra DB calls.
+                LicenseAttributeId              = item.LicenseAttributeId,
                 LicenseAttributeLicenseValue     = item.LicenseAttributeLicenseValue,
                 Keycode                          = item.Keycode,
                 ItemHierarchyId                  = item.ItemHierarchyId,
@@ -2041,7 +2238,7 @@ public class CartOrderPreparationService
     }
 
     /// <summary>
-    /// SECTION 1.11.5: Apply default storage GB for items with null storage.
+    /// SECTION 1.15: Apply default storage GB for items with null storage.
     ///
     /// SQL equivalent:
     /// <code>
@@ -2054,8 +2251,8 @@ public class CartOrderPreparationService
     /// WHERE items.storage_gb IS NULL
     /// </code>
     ///
-    /// Logic: Query product/category defaults from the products dictionary (already loaded).
-    /// Fallback: Use license.storage_gb if available.
+    /// Logic: Preserve SQL control flow by delegating storage resolution to repository.
+    /// No storage calculation rules are implemented in the service layer.
     ///
     /// Enriches items in-place. Non-fatal: items that cannot be resolved retain null.
     /// </summary>
@@ -2073,62 +2270,32 @@ public class CartOrderPreparationService
             return;
         }
 
+        // TODO: Replace Repository.GetItemStorageGbAsync with the actual SQL
+        // fn_get_item_storage_gb implementation once the SQL function definition
+        // and full database access are available.
+
         int enriched = 0;
 
         foreach (var item in items)
         {
-            // Skip if already has a value
-            if (item.StorageGb.HasValue && item.StorageGb.Value > 0)
+            // SQL: WHERE storage_gb IS NULL
+            if (item.StorageGb.HasValue)
                 continue;
 
-            int? resolvedStorage = null;
+            var resolvedStorage = _repository.GetItemStorageGbAsync(
+                item.Quantity,
+                item.LicenseCategoryName ?? string.Empty,
+                item.UsagePricingModelId,
+                CancellationToken.None).GetAwaiter().GetResult();
 
-            // TODO: REPLACE WITH ACTUAL
-            // In production, call fn_get_item_storage_gb with:
-            // - item.license_category_name
-            // - product.product_id (from products dict)
-            // - item.usage_pricing_model_id
-            // - license.storage_gb
-            //
-            // For now, use simple heuristics:
-            // 1. Check product defaults (if category matches)
-            // 2. Fall back to license storage
-            // 3. Hard default: 100 GB for capacity models, 10 GB for others
-
-            if (products.TryGetValue(item.ProductId, out var product))
-            {
-                // Product-specific defaults could be added as properties if needed
-                // For now, rely on license fallback
-            }
-
-            // Fallback to license storage
-            if (license?.StorageGb.HasValue == true && license.StorageGb.Value > 0)
-            {
-                resolvedStorage = license.StorageGb;
-                _logger.LogDebug(
-                    "EnrichDefaultStorageGb: LineItem={Line} → {Storage}GB (from license)",
-                    item.LineItem, resolvedStorage);
-            }
-            // Hard defaults based on category/model
-            else if (item.UsagePricingModelId == 2)  // Capacity model
-            {
-                resolvedStorage = 100;
-                _logger.LogDebug(
-                    "EnrichDefaultStorageGb: LineItem={Line} → {Storage}GB (capacity model default)",
-                    item.LineItem, resolvedStorage);
-            }
-            else
-            {
-                resolvedStorage = 10;
-                _logger.LogDebug(
-                    "EnrichDefaultStorageGb: LineItem={Line} → {Storage}GB (standard default)",
-                    item.LineItem, resolvedStorage);
-            }
-
-            if (resolvedStorage.HasValue && resolvedStorage.Value > 0)
+            if (resolvedStorage.HasValue)
             {
                 item.StorageGb = resolvedStorage;
                 enriched++;
+
+                _logger.LogDebug(
+                    "EnrichDefaultStorageGb: LineItem={Line} resolved StorageGb={Storage}",
+                    item.LineItem, resolvedStorage);
             }
         }
 
@@ -2303,28 +2470,37 @@ public class CartOrderPreparationService
     ///
     /// Non-fatal: Returns input if existing items unavailable or no primary item found.
     /// </summary>
-    /// <param name="existingItems">Existing cart items from Section 1.8 (may be empty).</param>
+    /// <param name="preparedModel">Prepared model containing ExistingItems loaded in Section 1.8.</param>
     /// <param name="currentBillingModelId">Current global billing model (may be null).</param>
     /// <param name="currentLicenseAttributeId">Current global license attribute ID (may be null).</param>
     /// <returns>Resolved (billingModelId, licenseAttributeId), or input if not found.</returns>
     public (int? BillingModelId, int? LicenseAttributeId) ApplyGlobalBillingModelFallback(
-        List<CartOrderItemContext>? existingItems,
+        CartOrderPreparedModel preparedModel,
         int? currentBillingModelId,
         int? currentLicenseAttributeId)
     {
-        // Early return: already have a billing model
-        if (currentBillingModelId.HasValue && currentBillingModelId.Value > 0)
+        if (preparedModel is null)
+        {
+            throw new ArgumentNullException(nameof(preparedModel));
+        }
+
+        // SQL guard: IF @license_attribute_license_value IS NULL
+        if (currentBillingModelId.HasValue)
         {
             _logger.LogDebug(
-                "ApplyGlobalBillingModelFallback: already have billing model {Model}; skipping",
+                "ApplyGlobalBillingModelFallback: fallback not executed because billing model is already populated ({Model})",
                 currentBillingModelId);
             return (currentBillingModelId, currentLicenseAttributeId);
         }
 
-        // Early return: no existing items
+        _logger.LogDebug("ApplyGlobalBillingModelFallback: fallback executed (billing model is null)");
+
+        var existingItems = preparedModel.ExistingItems;
+
+        // Early return: no existing items available
         if (existingItems is null || existingItems.Count == 0)
         {
-            _logger.LogDebug("ApplyGlobalBillingModelFallback: no existing items to fallback from");
+            _logger.LogDebug("ApplyGlobalBillingModelFallback: primary item not found (ExistingItems is empty)");
             return (currentBillingModelId, currentLicenseAttributeId);
         }
 
@@ -2339,22 +2515,29 @@ public class CartOrderPreparationService
             if (primaryExisting is null)
             {
                 _logger.LogDebug(
-                    "ApplyGlobalBillingModelFallback: no primary existing item; using input");
+                    "ApplyGlobalBillingModelFallback: primary item not found");
                 return (currentBillingModelId, currentLicenseAttributeId);
             }
 
-            if (!primaryExisting.LicenseAttributeLicenseValue.HasValue || primaryExisting.LicenseAttributeLicenseValue.Value <= 0)
+            _logger.LogDebug(
+                "ApplyGlobalBillingModelFallback: primary item found (LineItem={LineItem})",
+                primaryExisting.LineItem);
+
+            var copiedBillingModel = primaryExisting.LicenseAttributeLicenseValue;
+            var copiedLicenseAttributeId = currentLicenseAttributeId ?? primaryExisting.LicenseAttributeId;
+
+            if (!copiedBillingModel.HasValue && !copiedLicenseAttributeId.HasValue)
             {
                 _logger.LogDebug(
-                    "ApplyGlobalBillingModelFallback: primary existing item has no billing model; using input");
+                    "ApplyGlobalBillingModelFallback: primary item has no attribute values to copy");
                 return (currentBillingModelId, currentLicenseAttributeId);
             }
 
-            _logger.LogInformation(
-                "ApplyGlobalBillingModelFallback: applying fallback from existing primary item: billing={BillingModel}",
-                primaryExisting.LicenseAttributeLicenseValue);
+            _logger.LogDebug(
+                "ApplyGlobalBillingModelFallback: values copied from primary item (LicenseAttributeId={LicenseAttributeId}, LicenseAttributeLicenseValue={LicenseAttributeLicenseValue})",
+                copiedLicenseAttributeId, copiedBillingModel);
 
-            return (primaryExisting.LicenseAttributeLicenseValue, null);  // LicenseAttributeId would need to be looked up
+            return (copiedBillingModel, copiedLicenseAttributeId);
         }
         catch (Exception ex)
         {
@@ -2380,8 +2563,8 @@ public class CartOrderPreparationService
     /// WHERE storage_gb IS NULL
     /// </code>
     ///
-    /// Purpose: Calculate item storage based on category, quantity, and usage pricing model.
-    /// Uses repository to query actual fn_get_item_storage_gb logic (or emulates it).
+    /// Purpose: Resolve storage via repository call to preserve SQL control flow.
+    /// Service does not implement fn_get_item_storage_gb rules.
     ///
     /// Non-fatal: Items without resolved storage are left unchanged.
     /// </summary>
@@ -2401,24 +2584,28 @@ public class CartOrderPreparationService
             "EnrichDefaultStorageGbWithRepositoryAsync: enriching {Count} items with default storage",
             items.Count);
 
+        // TODO: Replace Repository.GetItemStorageGbAsync with the actual SQL
+        // fn_get_item_storage_gb implementation once the SQL function definition
+        // and full database access are available.
+
         int enriched = 0;
 
         foreach (var item in items)
         {
             // SQL: WHERE storage_gb IS NULL
-            if (item.StorageGb.HasValue && item.StorageGb.Value > 0)
+            if (item.StorageGb.HasValue)
                 continue;
 
             try
             {
-                // Call repository to calculate storage using SQL fn_get_item_storage_gb equivalent
+                // Resolve through repository (service-layer does not compute storage rules)
                 int? resolvedStorage = await _repository.GetItemStorageGbAsync(
                     item.Quantity,
                     item.LicenseCategoryName ?? "(unknown)",
                     item.UsagePricingModelId,
                     ct);
 
-                if (resolvedStorage.HasValue && resolvedStorage.Value > 0)
+                if (resolvedStorage.HasValue)
                 {
                     item.StorageGb = resolvedStorage;
                     enriched++;
@@ -2430,7 +2617,7 @@ public class CartOrderPreparationService
                 else
                 {
                     _logger.LogDebug(
-                        "EnrichDefaultStorageGbWithRepositoryAsync: LineItem={Line} could not resolve storage",
+                        "EnrichDefaultStorageGbWithRepositoryAsync: LineItem={Line} repository returned null; StorageGb unchanged",
                         item.LineItem);
                 }
             }
@@ -2683,6 +2870,8 @@ public class CartOrderItemContext
     public DateTime? ExpirationDate { get; set; }
     /// <summary>Vendor-supplied expiration date override. Used for WIFI items where Apple/Google provides the date. (Section 2.1.2)</summary>
     public DateTime? VendorExpirationDate { get; set; }
+    /// <summary>license_attribute_id from existing cart item lookup (Section 1.11 fallback).</summary>
+    public int? LicenseAttributeId { get; set; }
     public int? LicenseAttributeLicenseValue { get; set; }
     public string? Keycode { get; set; }
     /// <summary>Item hierarchy: 1 = primary product, 2 = secondary/add-on. Used in Section 2.1+ to determine processing rules.</summary>

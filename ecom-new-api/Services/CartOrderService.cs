@@ -12,15 +12,21 @@ namespace ecom_new_api.Services;
 public sealed class CartOrderService : ICartOrderService
 {
     private readonly ICartOrderRepository _repo;
+    private readonly CartOrderPreparationService _preparationService;
+    private readonly ProductDeterminationService _productDeterminationService;
     private readonly ICartOrderValidationConfig _validationConfig;
     private readonly ILogger<CartOrderService> _logger;
 
     public CartOrderService(
         ICartOrderRepository repo,
+        CartOrderPreparationService preparationService,
+        ProductDeterminationService productDeterminationService,
         ICartOrderValidationConfig validationConfig,
         ILogger<CartOrderService> logger)
     {
         _repo = repo ?? throw new ArgumentNullException(nameof(repo));
+        _preparationService = preparationService ?? throw new ArgumentNullException(nameof(preparationService));
+        _productDeterminationService = productDeterminationService ?? throw new ArgumentNullException(nameof(productDeterminationService));
         _validationConfig = validationConfig ?? throw new ArgumentNullException(nameof(validationConfig));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
@@ -53,10 +59,30 @@ public sealed class CartOrderService : ICartOrderService
             }
         }
 
-        // 3) Insert — returns vendor_order_code
+        // 3) Section 1 preparation
+        var preparedModel = await _preparationService.PrepareCartOrderAsync(request, ct);
+
+        // 4) Section 2 product determination (SQL execution order preserved)
+        preparedModel = await _productDeterminationService.DeterminePrimaryProductDatesAsync(preparedModel, ct);
+        preparedModel = await _productDeterminationService.DetermineSecondaryProductDatesAsync(preparedModel, ct);
+        preparedModel = await _productDeterminationService.ApplyWifiExpirationOverrideAsync(preparedModel, ct);
+        preparedModel = await _productDeterminationService.DeterminePrimaryProductTypeAsync(preparedModel, ct);
+        preparedModel = await _productDeterminationService.DetermineUpgradeItemsAsync(preparedModel, ct);
+        preparedModel = await _productDeterminationService.DetermineRetentionModelUpgradeAsync(preparedModel, ct);
+        preparedModel = await _productDeterminationService.DetermineSecondaryProductTypeAsync(preparedModel, ct);
+        preparedModel = await _productDeterminationService.CreateSecondaryUpgradeItemsAsync(preparedModel, ct);
+        preparedModel = await _productDeterminationService.DetermineSecondaryDefaultYearsAsync(preparedModel, ct);
+        preparedModel = await _productDeterminationService.DetermineSecondaryUpgradeStorageAsync(preparedModel, ct);
+        preparedModel = await _productDeterminationService.DetermineSfdcYearsFromDatesAsync(preparedModel, ct);
+        preparedModel = await _productDeterminationService.DetermineBusinessProductIdsAsync(preparedModel, ct);
+
+        // 5) Persist (temporary bridge)
+        // TODO: After repository migration, persist preparedModel directly instead of request,
+        // preserving all Section 1/2 in-memory updates as the source of truth.
         var vendorOrderCode = await _repo.InsertCartOrderAsync(request, ct);
 
-        // 4) Re-read — the API response is the hydrated aggregate, NOT the raw insert output
+        // 6) Re-read — the API response is the hydrated aggregate, NOT the raw insert output
+        // TODO: Re-read by prepared-model persistence identity when repository accepts CartOrderPreparedModel.
         var order = await _repo.SelectCartOrderAsync(vendorOrderCode, ct);
         if (order is null)
         {
