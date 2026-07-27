@@ -24,6 +24,9 @@ public class LicenseMessageEntity
     [Column("message_type_id")]
     public int? MessageTypeId { get; set; }
 
+    [Column("message_status_id")]
+    public int? MessageStatusId { get; set; }
+
     [Column("next_process_date")]
     public DateTime? NextProcessDate { get; set; }
 

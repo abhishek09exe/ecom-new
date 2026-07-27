@@ -21,6 +21,9 @@ public class LicenseAttributeEntity
     [Column("license_id")]
     public int? LicenseId { get; set; }
 
+    [Column("license_attribute_license_value")]
+    public int? LicenseAttributeLicenseValue { get; set; }
+
     [Column("license_attribute_id")]
     public int? LicenseAttributeId { get; set; }
 

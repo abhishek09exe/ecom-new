@@ -22,6 +22,37 @@ public interface ICartOrderRepository
     // ══════════════════════════════════════════════════════════════════════════════════
 
     /// <summary>
+    /// SQL Section 1.1: Existing cart lookup by vendor order code.
+    ///
+    /// Maps to:
+    ///   SELECT cart_order_id, currency_id
+    ///   FROM dbo.cart_order
+    ///   WHERE vendor_order_code = @vendor_order_code
+    ///
+    /// Read-only lookup: returns only cart_order_id and currency_id,
+    /// or null when no matching vendor_order_code exists.
+    /// </summary>
+    Task<CartOrderLookupResponse?> GetCartLookupByVendorOrderCodeAsync(
+        string vendorOrderCode,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// SQL Section 1.2: Cart context lookup by cart_order_id.
+    ///
+    /// Maps to:
+    ///   SELECT co.locale, co.site_id, cp.partner_id
+    ///   FROM dbo.cart_order co
+    ///   LEFT JOIN dbo.cart_order_partner cp ON cp.cart_order_id = co.cart_order_id
+    ///   WHERE co.cart_order_id = @cart_order_id
+    ///
+    /// Read-only lookup: returns locale, site_id, and partner_id only,
+    /// or null when no matching cart_order_id exists.
+    /// </summary>
+    Task<CartOrderContextLookupResponse?> GetCartContextByCartOrderIdAsync(
+        int cartOrderId,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// SECTION 1.1: Partner Lookup by PartnerKey
     /// Resolves partner GUID to internal partner_id integer.
     /// </summary>
@@ -86,6 +117,18 @@ public interface ICartOrderRepository
     /// </summary>
     Task<LicenseCategoryEntity?> GetLicenseCategoryByIdAsync(
         int licenseCategoryId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// SECTION 1.4.2: Load license categories for name-to-id assignment.
+    ///
+    /// Maps to:
+    ///   SELECT license_category_id, license_category_name
+    ///   FROM dbo.license_category
+    ///
+    /// Returns a lookup dictionary keyed by license_category_name.
+    /// </summary>
+    Task<Dictionary<string, int>> GetLicenseCategoryIdLookupByNameAsync(
         CancellationToken ct = default);
 
     /// <summary>
@@ -156,6 +199,20 @@ public interface ICartOrderRepository
         CancellationToken ct = default);
 
     /// <summary>
+    /// SECTION 1.7: Get existing license billing model from license_attribute_license.
+    ///
+    /// Maps to:
+    ///   SELECT TOP (1) license_attribute_license_value
+    ///   FROM dbo.license_attribute_license
+    ///   WHERE license_id = @license_id
+    ///
+    /// Returns the existing license billing model, or null if no row exists.
+    /// </summary>
+    Task<int?> GetLicenseAttributeLicenseValueAsync(
+        int licenseId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// SECTION 1.9.1.1 & 1.9.1.2: Get location-based billing model for business product lines.
     /// 
     /// Maps to:
@@ -178,6 +235,16 @@ public interface ICartOrderRepository
         CancellationToken ct = default);
 
     /// <summary>
+    /// SECTION 1.9.1.2: Check whether product_line_id is in BUSINESS_PRODUCT_LINE config.
+    ///
+    /// Maps to:
+    ///   EXISTS (SELECT 1 FROM fn_app_config_select_key_values('BUSINESS_PRODUCT_LINE','GENERAL') WHERE [key] = @product_line_id)
+    /// </summary>
+    Task<bool> IsBusinessProductLineAsync(
+        int productLineId,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// SECTION 1.9.1.1 & 1.9.1.2: Get DEFAULT_BUSINESS_BILLING_MODEL for fallback.
     /// 
     /// Maps to:
@@ -189,6 +256,79 @@ public interface ICartOrderRepository
     /// Returns: (licenseAttributeId, billingModelId) or null if not configured.
     /// </summary>
     Task<(int? LicenseAttributeId, int? BillingModelId)?> GetBusinessDefaultBillingModelAsync(
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// SECTION 1.9.1.2: Check whether billing model is in DEFAULT_BUSINESS_BILLING_MODEL config.
+    ///
+    /// Maps to:
+    ///   EXISTS (SELECT 1 FROM fn_app_config_select_key_values('DEFAULT_BUSINESS_BILLING_MODEL','GENERAL') WHERE [key] = @license_attribute_license_value)
+    /// </summary>
+    Task<bool> IsDefaultBusinessBillingModelAsync(
+        int billingModelId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// SECTION 1.12 Step 2: Resolve partner-specific usage pricing model by category.
+    ///
+    /// Maps to:
+    ///   SELECT m.usage_pricing_model_id
+    ///   FROM dbo.license_category lc
+    ///   INNER JOIN dbo.partner_usage_pricing_model m
+    ///     ON lc.license_category_id = m.license_category_id
+    ///   WHERE m.partner_id = @partnerId
+    ///     AND m.site_id = @siteId
+    ///     AND lc.license_category_name = @licenseCategoryName
+    ///
+    /// Returns (Found, UsagePricingModelId). Found=true with null UsagePricingModelId means
+    /// a matching row exists and SQL ISNULL fallback to 1 should be applied by caller.
+    /// </summary>
+    Task<(bool Found, byte? UsagePricingModelId)> GetPartnerUsagePricingModelByCategoryAsync(
+        int partnerId,
+        string? siteId,
+        string? licenseCategoryName,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// SECTION 1.14 Step 2: Resolve partner-specific product platform by category.
+    ///
+    /// Maps to:
+    ///   SELECT m.product_platform_id
+    ///   FROM dbo.license_category lc
+    ///   INNER JOIN dbo.partner_product_platform m
+    ///     ON lc.license_category_id = m.license_category_id
+    ///   WHERE m.partner_id = @partnerId
+    ///     AND m.site_id = @siteId
+    ///     AND lc.license_category_name = @licenseCategoryName
+    ///
+    /// Returns (Found, ProductPlatformId). Found=true with null ProductPlatformId means
+    /// a matching row exists and SQL ISNULL fallback to 1 should be applied by caller.
+    /// </summary>
+    Task<(bool Found, byte? ProductPlatformId)> GetPartnerProductPlatformByCategoryAsync(
+        int partnerId,
+        string? siteId,
+        string? licenseCategoryName,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// SECTION 1.13 Step 2: Resolve partner-specific retention model by category.
+    ///
+    /// Maps to:
+    ///   SELECT m.retention_model_id
+    ///   FROM dbo.license_category lc
+    ///   INNER JOIN dbo.partner_retention_model m
+    ///     ON lc.license_category_id = m.license_category_id
+    ///   WHERE m.partner_id = @partnerId
+    ///     AND m.site_id = @siteId
+    ///     AND lc.license_category_name = @licenseCategoryName
+    ///
+    /// Returns (Found, RetentionModelId). Found=true with null RetentionModelId means
+    /// a matching row exists and SQL ISNULL fallback to 1 should be applied by caller.
+    /// </summary>
+    Task<(bool Found, byte? RetentionModelId)> GetPartnerRetentionModelByCategoryAsync(
+        int partnerId,
+        string? siteId,
+        string? licenseCategoryName,
         CancellationToken ct = default);
 
     /// <summary>
@@ -262,6 +402,18 @@ public interface ICartOrderRepository
     /// </summary>
     Task<CartOrderResponse?> SelectCartOrderAsync(
         string vendorOrderCode, CancellationToken ct = default);
+
+    /// <summary>
+    /// Re-reads the full cart aggregate (header + items) by <c>cart_order_id</c>.
+    ///
+    /// Purpose: Allows callers that already resolved SQL Section 1.1
+    /// (<c>cart_order_id</c> by <c>vendor_order_code</c>) to avoid querying
+    /// <c>cart_order</c> a second time by vendor code.
+    ///
+    /// Returns the same hydrated shape as <see cref="SelectCartOrderAsync(string, CancellationToken)"/>.
+    /// </summary>
+    Task<CartOrderResponse?> SelectCartOrderByIdAsync(
+        int cartOrderId, CancellationToken ct = default);
 
     // ── Quote-key check (pivot create → update) ─────────────────────────────────
 

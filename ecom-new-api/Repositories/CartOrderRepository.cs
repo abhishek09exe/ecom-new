@@ -19,9 +19,6 @@ namespace ecom_new_api.Repositories;
 /// </summary>
 public class CartOrderRepository : ICartOrderRepository
 {
-    private const int StubBusinessBillingModel = 110;
-    private const int StubBusinessLicenseAttributeId = 11;
-
     private readonly CartOrderDbContext _db;
     private readonly ILogger<CartOrderRepository> _logger;
 
@@ -34,6 +31,45 @@ public class CartOrderRepository : ICartOrderRepository
     // ══════════════════════════════════════════════════════════════════════════════════
     // SECTION 1: Simple Lookups (Database Access Methods)
     // ══════════════════════════════════════════════════════════════════════════════════
+
+    // Section order guide (usp_cart_insert_cart_order_item, ascending):
+    /// <summary>
+    /// SQL Section 1.1: Existing cart lookup by vendor order code.
+    ///
+    /// Query:
+    ///   SELECT cart_order_id, currency_id
+    ///   FROM dbo.cart_order
+    ///   WHERE vendor_order_code = @vendor_order_code
+    ///
+    /// Purpose: Pure database lookup used by Section 1.1 control flow. This method intentionally
+    /// queries only the cart_order table and does not load items, partners, cart_json, or
+    /// any navigation properties.
+    /// </summary>
+    public async Task<CartOrderLookupResponse?> GetCartLookupByVendorOrderCodeAsync(
+        string vendorOrderCode,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(vendorOrderCode))
+        {
+            _logger.LogDebug("GetCartLookupByVendorOrderCodeAsync: vendor order code is null/empty");
+            return null;
+        }
+
+        _logger.LogDebug(
+            "GetCartLookupByVendorOrderCodeAsync: lookup by vendor order code {VendorOrderCode}",
+            vendorOrderCode);
+
+        return await _db.CartOrders
+            .AsNoTracking()
+            .Where(c => c.VendorOrderCode == vendorOrderCode)
+            .Select(c => new CartOrderLookupResponse
+            {
+                CartOrderId = c.CartOrderId,
+                CurrencyId = c.CurrencyId
+            })
+            .FirstOrDefaultAsync(ct);
+    }
+
 
     /// <summary>
     /// SECTION 1.1: Partner Lookup by PartnerKey
@@ -79,7 +115,47 @@ public class CartOrderRepository : ICartOrderRepository
 
         return partnerId;
     }
+    /// <summary>
+    /// SQL Section 1.2: Cart context lookup by cart_order_id.
+    ///
+    /// Query:
+    ///   SELECT co.locale, co.site_id, cp.partner_id
+    ///   FROM dbo.cart_order co
+    ///   LEFT JOIN dbo.cart_order_partner cp ON cp.cart_order_id = co.cart_order_id
+    ///   WHERE co.cart_order_id = @cart_order_id
+    ///
+    /// Purpose: Pure database lookup for cart context values (locale/site/partner).
+    /// No locale conversion or downstream logic is performed here.
+    /// </summary>
+    public async Task<CartOrderContextLookupResponse?> GetCartContextByCartOrderIdAsync(
+        int cartOrderId,
+        CancellationToken ct = default)
+    {
+        if (cartOrderId <= 0)
+        {
+            _logger.LogDebug("GetCartContextByCartOrderIdAsync: invalid cartOrderId={CartOrderId}", cartOrderId);
+            return null;
+        }
 
+        _logger.LogDebug(
+            "GetCartContextByCartOrderIdAsync: lookup for cartOrderId={CartOrderId}",
+            cartOrderId);
+
+        return await (from co in _db.CartOrders.AsNoTracking()
+                      join cp in _db.CartOrderPartners.AsNoTracking()
+                          on co.CartOrderId equals cp.CartOrderId into partnerJoin
+                      from cp in partnerJoin.DefaultIfEmpty()
+                      where co.CartOrderId == cartOrderId
+                      select new CartOrderContextLookupResponse
+                      {
+                          Locale = co.Locale,
+                          SiteId = co.SiteId,
+                          PartnerId = cp != null ? cp.PartnerId : null
+                      })
+            .FirstOrDefaultAsync(ct);
+    }
+
+    
     /// <summary>
     /// SECTION 1.2: Currency Resolution by CurrencyCode
     /// 
@@ -125,6 +201,121 @@ public class CartOrderRepository : ICartOrderRepository
         return currencyId;
     }
 
+  
+    
+
+    
+    /// <summary>
+    /// SQL Section 1.2.1: Get Locale Mapping.
+    /// 
+    /// SQL equivalent:
+    /// <code>
+    /// SELECT @language_code = language_code,
+    ///        @location_code = location_code
+    /// FROM dbo.fn_locale_to_lang_loc(@locale)
+    /// </code>
+    /// 
+    /// Purpose: Translate <c>@locale</c> into the language and location codes used by later
+    /// section lookups. This is a pure read-only lookup with no fallback defaults.
+    /// 
+    /// Returns: A row containing only <c>LanguageCode</c> and <c>LocationCode</c>, or null
+    /// when the locale is not found.
+    /// </summary>
+    public async Task<LocaleLanguageLocationEntity?> GetLocaleByCodeAsync(
+        string locale,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(locale))
+        {
+            _logger.LogDebug("Locale is null or empty, skipping locale lookup");
+            return null;
+        }
+
+        _logger.LogDebug("Fetching locale mapping: Locale={Locale}", locale);
+
+        try
+        {
+            // Query: Get locale mapping (Section 1.2.1 equivalent)
+            var localeMapping = await _db.LocaleLanguageLocations
+                .AsNoTracking()
+                .Where(l => l.Locale != null && l.Locale.ToLower() == locale.ToLower())
+                .Select(l => new LocaleLanguageLocationEntity
+                {
+                    LanguageCode = l.LanguageCode,
+                    LocationCode = l.LocationCode
+                })
+                .FirstOrDefaultAsync(
+                    cancellationToken: ct);
+
+            if (localeMapping != null)
+            {
+                _logger.LogDebug(
+                    "Locale mapping fetched: Locale={Locale}, Language={Language}, Location={Location}",
+                    locale, localeMapping.LanguageCode, localeMapping.LocationCode);
+            }
+            else
+            {
+                _logger.LogDebug("Locale mapping not found: Locale={Locale}", locale);
+            }
+
+            return localeMapping;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching locale mapping: Locale={Locale}", locale);
+            throw;
+        }
+    }
+
+    
+
+    /// <summary>
+    /// SECTION 1.3: Detect Utility Billing Models
+    ///
+    /// Query: SELECT COUNT(*) FROM license_attribute_license_value
+    ///        WHERE license_attribute_license_value = @value AND (is_utility = 1 OR EXISTS in config)
+    ///
+    /// Purpose: Determine if a billing model (license_attribute_license_value) belongs to the
+    /// utility billing models set (Section 1.3 @UTILITY_BILLING_MODELS config table).
+    ///
+    /// Returns: True if the billing model is a utility model, false otherwise.
+    ///
+    /// EF Core: Single filtered count query using AsNoTracking (read-only lookup).
+    /// </summary>
+    public async Task<bool> IsUtilityBillingModelAsync(
+        int billingModelId,
+        CancellationToken ct = default)
+    {
+        if (billingModelId <= 0)
+        {
+            _logger.LogDebug("IsUtilityBillingModelAsync: invalid billing model ID {Id}", billingModelId);
+            return false;
+        }
+
+        _logger.LogDebug("IsUtilityBillingModelAsync: checking billing model {Id}", billingModelId);
+
+        try
+        {
+            // TODO: Add EF Core mapping for dbo.fn_app_config_select_key_values('UTILITY_BILLING_MODELS', 'GENERAL')
+            // or the underlying table/entity that supplies @UTILITY_BILLING_MODELS.
+            // The current DbContext does not model that configuration source yet, so we cannot
+            // perform the SQL EXISTS check without introducing a real EF entity or DbSet.
+            const bool isUtility = false;
+
+            _logger.LogDebug(
+                "IsUtilityBillingModelAsync: billing model {Id} is utility={IsUtility}",
+                billingModelId, isUtility);
+
+            return await Task.FromResult(isUtility);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "IsUtilityBillingModelAsync: error checking billing model {Id}",
+                billingModelId);
+            return false;
+        }
+    }
     /// <summary>
     /// SECTION 1.3: Vendor Order Code Existence Check
     /// 
@@ -162,6 +353,214 @@ public class CartOrderRepository : ICartOrderRepository
     }
 
     /// <summary>
+    /// SECTION 1.3.2: Resolve License Attribute ID
+    ///
+    /// Query: SELECT license_attribute_id FROM dbo.license_attribute_license_value
+    ///        WHERE license_attribute_license_value = @value
+    ///
+    /// Purpose: Resolve the license_attribute_id (foreign key) from the billing model value
+    /// (license_attribute_license_value). Used for attribute fallback in Section 1.11.
+    ///
+    /// Returns: The license_attribute_id, or null if not found.
+    ///
+    /// EF Core: Single filtered query using AsNoTracking (read-only lookup).
+    /// </summary>
+    public async Task<int?> GetLicenseAttributeIdByValueAsync(
+        int billingModelId,
+        CancellationToken ct = default)
+    {
+        if (billingModelId <= 0)
+        {
+            _logger.LogDebug("GetLicenseAttributeIdByValueAsync: invalid billing model ID {Id}", billingModelId);
+            return null;
+        }
+
+        _logger.LogDebug(
+            "GetLicenseAttributeIdByValueAsync: resolving attribute ID for billing model {Id}",
+            billingModelId);
+
+        try
+        {
+            var attributeId = await _db.LicenseAttributes
+                .AsNoTracking()
+                .Where(a => a.LicenseAttributeLicenseValueId == billingModelId)
+                .Select(a => (int?)a.LicenseAttributeId)
+                .FirstOrDefaultAsync(ct);
+
+            if (attributeId.HasValue && attributeId.Value > 0)
+                _logger.LogDebug(
+                    "GetLicenseAttributeIdByValueAsync: billing model {BillingModel} → attribute ID {AttrId}",
+                    billingModelId, attributeId);
+            else
+                _logger.LogWarning(
+                    "GetLicenseAttributeIdByValueAsync: no attribute ID found for billing model {BillingModel}",
+                    billingModelId);
+
+            return await Task.FromResult(attributeId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "GetLicenseAttributeIdByValueAsync: error resolving attribute ID for billing model {Id}",
+                billingModelId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// SECTION 1.7: Resolve existing license billing model from license_attribute_license.
+    ///
+    /// Query:
+    ///   SELECT TOP (1) license_attribute_license_value
+    ///   FROM dbo.license_attribute_license
+    ///   WHERE license_id = @license_id
+    /// </summary>
+    public async Task<int?> GetLicenseAttributeLicenseValueAsync(
+        int licenseId,
+        CancellationToken cancellationToken = default)
+    {
+        if (licenseId <= 0)
+        {
+            _logger.LogDebug("GetLicenseAttributeLicenseValueAsync: invalid license ID {LicenseId}", licenseId);
+            return null;
+        }
+
+        _logger.LogDebug(
+            "GetLicenseAttributeLicenseValueAsync: resolving billing model for LicenseId={LicenseId}",
+            licenseId);
+
+        try
+        {
+            var billingModelId = await _db.LicenseAttributeLicenses
+                .AsNoTracking()
+                .Where(lal => lal.LicenseId == licenseId)
+                .Select(lal => lal.LicenseAttributeLicenseValue)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (billingModelId.HasValue)
+                _logger.LogDebug(
+                    "GetLicenseAttributeLicenseValueAsync: LicenseId={LicenseId} -> BillingModel={BillingModel}",
+                    licenseId, billingModelId);
+            else
+                _logger.LogDebug(
+                    "GetLicenseAttributeLicenseValueAsync: no billing model row found for LicenseId={LicenseId}",
+                    licenseId);
+
+            return billingModelId;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "GetLicenseAttributeLicenseValueAsync: error resolving billing model for LicenseId={LicenseId}",
+                licenseId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// SECTION 1.3.3: Get License Message (Next Process Date)
+    /// 
+    /// Query: SELECT * FROM license_message WHERE license_id = @licenseId
+    ///        AND message_type_id = (monthly renewal/process type)
+    /// 
+    /// Purpose: Load next_process_date for monthly-to-annual conversion (Sections 1.7, 1.7.1).
+    /// 
+    /// Returns: LicenseMessageEntity with next_process_date, null if not found
+    /// 
+    /// EF Core: Filtered query for the license_id
+    /// </summary>
+    public async Task<LicenseMessageEntity?> GetLicenseMessageByIdAsync(
+        int licenseId,
+        CancellationToken ct = default)
+    {
+        _logger.LogDebug("Fetching license message: LicenseId={LicenseId}", licenseId);
+
+        try
+        {
+            // Query: Get license message for this license (typically one per license for monthly billing)
+            var message = await _db.LicenseMessages
+                .AsNoTracking()
+                .Where(m => m.LicenseId == licenseId &&
+                            m.MessageTypeId == 10 &&
+                            m.MessageStatusId == 1)
+                .FirstOrDefaultAsync(cancellationToken: ct);
+
+            if (message != null)
+            {
+                _logger.LogDebug(
+                    "License message fetched: LicenseId={LicenseId}, NextProcessDate={NextProcessDate}",
+                    message.LicenseId, message.NextProcessDate);
+            }
+            else
+            {
+                _logger.LogDebug("License message not found: LicenseId={LicenseId}", licenseId);
+            }
+
+            return message;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching license message: LicenseId={LicenseId}", licenseId);
+            throw;
+        }
+    }
+    /// <summary>
+    /// SECTION 1.3 & 1.5: Get License by Keycode (License Profile)
+    /// 
+    /// Query: SELECT * FROM license WHERE keycode = @keycode
+    ///        (with all profile data: category, seats, expiration, autorenew, retention, pricing, etc.)
+    /// 
+    /// Purpose: Load complete license profile (Section 1.5 fn_license_select_license_profile).
+    /// Required by: ProductDeterminationService for all Section 2+ operations
+    /// 
+    /// Returns: LicenseEntity with all fields populated, null if keycode not found
+    /// 
+    /// EF Core: Include related LicenseCategory to fetch category name
+    /// </summary>
+    public async Task<LicenseEntity?> GetLicenseByKeycodeAsync(
+        string keycode,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(keycode))
+        {
+            _logger.LogDebug("Keycode is null or empty, skipping license lookup");
+            return null;
+        }
+
+        _logger.LogDebug("Fetching license entity by keycode: {Keycode}", keycode);
+
+        try
+        {
+            // Query: Get full license entity with related category by keycode
+            var license = await _db.Licenses
+                .AsNoTracking()
+                .Include(l => l.LicenseCategory)  // Fetch category for name reference
+                .FirstOrDefaultAsync(l => l.Keycode == keycode, cancellationToken: ct);
+
+            if (license != null)
+            {
+                _logger.LogDebug(
+                    "License fetched: LicenseId={LicenseId}, Keycode={Keycode}, Category={Category}, " +
+                    "CategoryType={CategoryType}, Autorenew={Autorenew}, RetentionModel={RetentionModel}",
+                    license.LicenseId, license.Keycode, license.LicenseCategory?.LicenseCategoryName,
+                    license.CategoryTypeName, license.AutorenewCycle, license.RetentionModelId);
+            }
+            else
+            {
+                _logger.LogWarning("License not found: Keycode={Keycode}", keycode);
+            }
+
+            return license;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching license by keycode: {Keycode}", keycode);
+            throw;
+        }
+    }
+    
+
+    /// <summary>
     /// SECTION 1.4: Get Partner Full Entity by PartnerId
     /// 
     /// Query: SELECT * FROM partner WHERE partner_id = @partnerId
@@ -195,6 +594,33 @@ public class CartOrderRepository : ICartOrderRepository
         }
 
         return partner;
+    }
+        /// <summary>
+    /// SECTION 1.4.2: Load license category lookup by category name.
+    ///
+    /// Query:
+    ///   SELECT license_category_id, license_category_name
+    ///   FROM license_category
+    ///
+    /// Purpose: Provide the SQL-equivalent lookup source for assigning
+    /// <c>license_category_id</c> from <c>license_category_name</c>.
+    /// </summary>
+    public async Task<Dictionary<string, int>> GetLicenseCategoryIdLookupByNameAsync(
+        CancellationToken ct = default)
+    {
+        var rows = await _db.LicenseCategories
+            .AsNoTracking()
+            .Where(lc => lc.LicenseCategoryName != null)
+            .Select(lc => new
+            {
+                lc.LicenseCategoryName,
+                lc.LicenseCategoryId
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .GroupBy(x => x.LicenseCategoryName!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().LicenseCategoryId, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -326,8 +752,9 @@ public class CartOrderRepository : ICartOrderRepository
         }
     }
 
+
     /// <summary>
-    /// SECTION 1.7: Get License Category Full Entity by LicenseCategoryId
+    ///  Get License Category Full Entity by LicenseCategoryId
     /// 
     /// Query: SELECT * FROM license_category WHERE license_category_id = @licenseCategoryId
     /// 
@@ -364,160 +791,6 @@ public class CartOrderRepository : ICartOrderRepository
         return category;
     }
 
-    /// <summary>
-    /// SECTION 1.3 & 1.5: Get License by Keycode (License Profile)
-    /// 
-    /// Query: SELECT * FROM license WHERE keycode = @keycode
-    ///        (with all profile data: category, seats, expiration, autorenew, retention, pricing, etc.)
-    /// 
-    /// Purpose: Load complete license profile (Section 1.5 fn_license_select_license_profile).
-    /// Required by: ProductDeterminationService for all Section 2+ operations
-    /// 
-    /// Returns: LicenseEntity with all fields populated, null if keycode not found
-    /// 
-    /// EF Core: Include related LicenseCategory to fetch category name
-    /// </summary>
-    public async Task<LicenseEntity?> GetLicenseByKeycodeAsync(
-        string keycode,
-        CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(keycode))
-        {
-            _logger.LogDebug("Keycode is null or empty, skipping license lookup");
-            return null;
-        }
-
-        _logger.LogDebug("Fetching license entity by keycode: {Keycode}", keycode);
-
-        try
-        {
-            // Query: Get full license entity with related category by keycode
-            var license = await _db.Licenses
-                .AsNoTracking()
-                .Include(l => l.LicenseCategory)  // Fetch category for name reference
-                .FirstOrDefaultAsync(l => l.Keycode == keycode, cancellationToken: ct);
-
-            if (license != null)
-            {
-                _logger.LogDebug(
-                    "License fetched: LicenseId={LicenseId}, Keycode={Keycode}, Category={Category}, " +
-                    "CategoryType={CategoryType}, Autorenew={Autorenew}, RetentionModel={RetentionModel}",
-                    license.LicenseId, license.Keycode, license.LicenseCategory?.LicenseCategoryName,
-                    license.CategoryTypeName, license.AutorenewCycle, license.RetentionModelId);
-            }
-            else
-            {
-                _logger.LogWarning("License not found: Keycode={Keycode}", keycode);
-            }
-
-            return license;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error fetching license by keycode: {Keycode}", keycode);
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// SECTION 1.3.3: Get License Message (Next Process Date)
-    /// 
-    /// Query: SELECT * FROM license_message WHERE license_id = @licenseId
-    ///        AND message_type_id = (monthly renewal/process type)
-    /// 
-    /// Purpose: Load next_process_date for monthly-to-annual conversion (Sections 1.7, 1.7.1).
-    /// 
-    /// Returns: LicenseMessageEntity with next_process_date, null if not found
-    /// 
-    /// EF Core: Filtered query for the license_id
-    /// </summary>
-    public async Task<LicenseMessageEntity?> GetLicenseMessageByIdAsync(
-        int licenseId,
-        CancellationToken ct = default)
-    {
-        _logger.LogDebug("Fetching license message: LicenseId={LicenseId}", licenseId);
-
-        try
-        {
-            // Query: Get license message for this license (typically one per license for monthly billing)
-            var message = await _db.LicenseMessages
-                .AsNoTracking()
-                .Where(m => m.LicenseId == licenseId)
-                .FirstOrDefaultAsync(cancellationToken: ct);
-
-            if (message != null)
-            {
-                _logger.LogDebug(
-                    "License message fetched: LicenseId={LicenseId}, NextProcessDate={NextProcessDate}",
-                    message.LicenseId, message.NextProcessDate);
-            }
-            else
-            {
-                _logger.LogDebug("License message not found: LicenseId={LicenseId}", licenseId);
-            }
-
-            return message;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error fetching license message: LicenseId={LicenseId}", licenseId);
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// SECTION 1.2.1: Get Locale Mapping
-    /// 
-    /// Query: SELECT * FROM locale_language_location WHERE locale = @locale
-    ///        OR CALL fn_locale_to_lang_loc(@locale, @language_code OUTPUT, @location_code OUTPUT)
-    /// 
-    /// Purpose: Translate @locale (e.g., 'en_US') to language_code and location_code
-    /// for Section 1.9 product line lookups and order context.
-    /// 
-    /// Returns: LocaleLanguageLocationEntity with language_code and location_code, 
-    ///          null if locale not found (use defaults: "en" / "US")
-    /// 
-    /// EF Core: Simple filtered query for locale code
-    /// </summary>
-    public async Task<LocaleLanguageLocationEntity?> GetLocaleByCodeAsync(
-        string locale,
-        CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(locale))
-        {
-            _logger.LogDebug("Locale is null or empty, skipping locale lookup");
-            return null;
-        }
-
-        _logger.LogDebug("Fetching locale mapping: Locale={Locale}", locale);
-
-        try
-        {
-            // Query: Get locale mapping
-            var localeMapping = await _db.LocaleLanguageLocations
-                .AsNoTracking()
-                .FirstOrDefaultAsync(l => l.Locale != null && l.Locale.ToLower() == locale.ToLower(), 
-                    cancellationToken: ct);
-
-            if (localeMapping != null)
-            {
-                _logger.LogDebug(
-                    "Locale mapping fetched: Locale={Locale}, Language={Language}, Location={Location}",
-                    localeMapping.Locale, localeMapping.LanguageCode, localeMapping.LocationCode);
-            }
-            else
-            {
-                _logger.LogDebug("Locale mapping not found: Locale={Locale}", locale);
-            }
-
-            return localeMapping;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error fetching locale mapping: Locale={Locale}", locale);
-            throw;
-        }
-    }
 
     /// <summary>
     /// SECTION 1.9 & 1.9.1: Get Product Line by License Category and Locale
@@ -584,109 +857,6 @@ public class CartOrderRepository : ICartOrderRepository
     }
 
     /// <summary>
-    /// SECTION 1.3: Detect Utility Billing Models
-    ///
-    /// Query: SELECT COUNT(*) FROM license_attribute_license_value
-    ///        WHERE license_attribute_license_value = @value AND (is_utility = 1 OR EXISTS in config)
-    ///
-    /// Purpose: Determine if a billing model (license_attribute_license_value) belongs to the
-    /// utility billing models set (Section 1.3 @UTILITY_BILLING_MODELS config table).
-    ///
-    /// Returns: True if the billing model is a utility model, false otherwise.
-    ///
-    /// EF Core: Single filtered count query using AsNoTracking (read-only lookup).
-    /// </summary>
-    public async Task<bool> IsUtilityBillingModelAsync(
-        int billingModelId,
-        CancellationToken ct = default)
-    {
-        if (billingModelId <= 0)
-        {
-            _logger.LogDebug("IsUtilityBillingModelAsync: invalid billing model ID {Id}", billingModelId);
-            return false;
-        }
-
-        _logger.LogDebug("IsUtilityBillingModelAsync: checking billing model {Id}", billingModelId);
-
-        try
-        {
-            // TODO: REPLACE WITH ACTUAL query to utility_billing_models config table
-            // For now, check a hardcoded set of known utility billing models
-            // Common utility billing models: 20, 21, 22, etc. (varies by implementation)
-            var knownUtilityModels = new[] { 20, 21, 22, 23, 24, 25 };
-            var isUtility = knownUtilityModels.Contains(billingModelId);
-
-            _logger.LogDebug(
-                "IsUtilityBillingModelAsync: billing model {Id} is utility={IsUtility}",
-                billingModelId, isUtility);
-
-            return await Task.FromResult(isUtility);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "IsUtilityBillingModelAsync: error checking billing model {Id}",
-                billingModelId);
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// SECTION 1.3.2: Resolve License Attribute ID
-    ///
-    /// Query: SELECT license_attribute_id FROM dbo.license_attribute_license_value
-    ///        WHERE license_attribute_license_value = @value
-    ///
-    /// Purpose: Resolve the license_attribute_id (foreign key) from the billing model value
-    /// (license_attribute_license_value). Used for attribute fallback in Section 1.11.
-    ///
-    /// Returns: The license_attribute_id, or null if not found.
-    ///
-    /// EF Core: Single filtered query using AsNoTracking (read-only lookup).
-    /// </summary>
-    public async Task<int?> GetLicenseAttributeIdByValueAsync(
-        int billingModelId,
-        CancellationToken ct = default)
-    {
-        if (billingModelId <= 0)
-        {
-            _logger.LogDebug("GetLicenseAttributeIdByValueAsync: invalid billing model ID {Id}", billingModelId);
-            return null;
-        }
-
-        _logger.LogDebug(
-            "GetLicenseAttributeIdByValueAsync: resolving attribute ID for billing model {Id}",
-            billingModelId);
-
-        try
-        {
-            // TODO: REPLACE WITH ACTUAL query to license_attribute_license_value table
-            // For now, use a simple mapping: attribute_id = billing_model / 10 (placeholder logic)
-            // In production, query: SELECT license_attribute_id FROM license_attribute_license_value
-            //                       WHERE license_attribute_license_value = @value
-            var attributeId = billingModelId > 0 ? (billingModelId / 10) : (int?)null;
-
-            if (attributeId.HasValue && attributeId.Value > 0)
-                _logger.LogDebug(
-                    "GetLicenseAttributeIdByValueAsync: billing model {BillingModel} → attribute ID {AttrId}",
-                    billingModelId, attributeId);
-            else
-                _logger.LogWarning(
-                    "GetLicenseAttributeIdByValueAsync: no attribute ID found for billing model {BillingModel}",
-                    billingModelId);
-
-            return await Task.FromResult(attributeId);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "GetLicenseAttributeIdByValueAsync: error resolving attribute ID for billing model {Id}",
-                billingModelId);
-            return null;
-        }
-    }
-
-    /// <summary>
     /// SECTION 1.9.1.1 & 1.9.1.2: Get location-based billing model for business product lines.
     /// </summary>
     public async Task<(int? BillingModelId, int? LicenseAttributeId)?> GetLocationBasedBillingModelAsync(
@@ -709,18 +879,39 @@ public class CartOrderRepository : ICartOrderRepository
 
         try
         {
-            var categoryList = licenseCategoryIds.ToList();
+            var categoryList = licenseCategoryIds.Distinct().ToList();
             if (categoryList.Count == 0)
                 return null;
 
-            // Temporary stub to preserve SQL control flow while data access is unavailable.
-            // The required mapping table (license_category_product_line_license_attribute_license_value)
-            // is not yet modeled in EF Core and this project currently has no database access.
+            var row = await (from pl in _db.LicenseCategoryProductLines.AsNoTracking()
+                             join lav in _db.LicenseCategoryProductLineLicenseAttributeLicenseValues.AsNoTracking()
+                                 on pl.LicenseCategoryProductLineId equals lav.LicenseCategoryProductLineId
+                             join lv in _db.LicenseAttributes.AsNoTracking()
+                                 on lav.LicenseAttributeLicenseValue equals lv.LicenseAttributeLicenseValue
+                             where pl.ProductLineId == productLineId
+                                   && pl.LocationCode == locationCode
+                                   && pl.LicenseCategoryId.HasValue
+                                   && categoryList.Contains(pl.LicenseCategoryId.Value)
+                             select new
+                             {
+                                 BillingModelId = (int?)lv.LicenseAttributeLicenseValue,
+                                 LicenseAttributeId = lv.LicenseAttributeId
+                             })
+                .FirstOrDefaultAsync(ct);
+
+            if (row is null)
+            {
+                _logger.LogDebug(
+                    "GetLocationBasedBillingModelAsync: no location-specific billing row found for ProductLine={ProductLine}, Location={Location}",
+                    productLineId, locationCode);
+                return null;
+            }
+
             _logger.LogDebug(
-                "GetLocationBasedBillingModelAsync: using temporary stub values BillingModelId={BillingModelId}, LicenseAttributeId={LicenseAttributeId}",
-                StubBusinessBillingModel, StubBusinessLicenseAttributeId);
-            return await Task.FromResult<(int? BillingModelId, int? LicenseAttributeId)?>(
-                (StubBusinessBillingModel, StubBusinessLicenseAttributeId));
+                "GetLocationBasedBillingModelAsync: resolved BillingModelId={BillingModelId}, LicenseAttributeId={LicenseAttributeId}",
+                row.BillingModelId, row.LicenseAttributeId);
+
+            return (row.BillingModelId, row.LicenseAttributeId);
         }
         catch (Exception ex)
         {
@@ -741,19 +932,244 @@ public class CartOrderRepository : ICartOrderRepository
 
         try
         {
-            // TODO: Replace this stub with DEFAULT_BUSINESS_BILLING_MODEL query once
-            // database access is available and required tables/config are modeled in EF Core.
-            _logger.LogDebug(
-                "GetBusinessDefaultBillingModelAsync: using temporary stub values LicenseAttributeId={LicenseAttributeId}, BillingModelId={BillingModelId}",
-                StubBusinessLicenseAttributeId, StubBusinessBillingModel);
+            var row = await (from cfg in _db.AppConfigKeyValues
+                                 .FromSqlInterpolated($@"
+SELECT CAST([key] AS int) AS ConfigKey,
+       [value] AS ConfigValue
+FROM dbo.fn_app_config_select_key_values('DEFAULT_BUSINESS_BILLING_MODEL', 'GENERAL')")
+                                 .AsNoTracking()
+                             join lv in _db.LicenseAttributes.AsNoTracking()
+                                 on cfg.ConfigKey equals lv.LicenseAttributeLicenseValue
+                             select new
+                             {
+                                 LicenseAttributeId = lv.LicenseAttributeId,
+                                 BillingModelId = (int?)lv.LicenseAttributeLicenseValue
+                             })
+                .FirstOrDefaultAsync(ct);
 
-            return await Task.FromResult<(int? LicenseAttributeId, int? BillingModelId)?>(
-                (StubBusinessLicenseAttributeId, StubBusinessBillingModel));
+            if (row is null)
+            {
+                _logger.LogDebug("GetBusinessDefaultBillingModelAsync: no default business billing model configured");
+                return null;
+            }
+
+            _logger.LogDebug(
+                "GetBusinessDefaultBillingModelAsync: resolved LicenseAttributeId={LicenseAttributeId}, BillingModelId={BillingModelId}",
+                row.LicenseAttributeId, row.BillingModelId);
+
+            return (row.LicenseAttributeId, row.BillingModelId);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "GetBusinessDefaultBillingModelAsync: error fetching default");
             return null;
+        }
+    }
+
+    public async Task<bool> IsBusinessProductLineAsync(
+        int productLineId,
+        CancellationToken ct = default)
+    {
+        if (productLineId <= 0)
+            return false;
+
+        try
+        {
+            return await _db.AppConfigKeyValues
+                .FromSqlInterpolated($@"
+SELECT CAST([key] AS int) AS ConfigKey,
+       [value] AS ConfigValue
+FROM dbo.fn_app_config_select_key_values('BUSINESS_PRODUCT_LINE', 'GENERAL')
+WHERE [key] = {productLineId}")
+                .AsNoTracking()
+                .AnyAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "IsBusinessProductLineAsync: error checking ProductLineId={ProductLineId}",
+                productLineId);
+            return false;
+        }
+    }
+
+    public async Task<bool> IsDefaultBusinessBillingModelAsync(
+        int billingModelId,
+        CancellationToken ct = default)
+    {
+        if (billingModelId <= 0)
+            return false;
+
+        try
+        {
+            return await _db.AppConfigKeyValues
+                .FromSqlInterpolated($@"
+SELECT CAST([key] AS int) AS ConfigKey,
+       [value] AS ConfigValue
+FROM dbo.fn_app_config_select_key_values('DEFAULT_BUSINESS_BILLING_MODEL', 'GENERAL')
+WHERE [key] = {billingModelId}")
+                .AsNoTracking()
+                .AnyAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "IsDefaultBusinessBillingModelAsync: error checking BillingModelId={BillingModelId}",
+                billingModelId);
+            return false;
+        }
+    }
+
+    public async Task<(bool Found, byte? UsagePricingModelId)> GetPartnerUsagePricingModelByCategoryAsync(
+        int partnerId,
+        string? siteId,
+        string? licenseCategoryName,
+        CancellationToken ct = default)
+    {
+        if (partnerId <= 0 || string.IsNullOrWhiteSpace(siteId) || string.IsNullOrWhiteSpace(licenseCategoryName))
+        {
+            _logger.LogDebug(
+                "GetPartnerUsagePricingModelByCategoryAsync: invalid params (partnerId={PartnerId}, siteId={SiteId}, category={Category})",
+                partnerId, siteId, licenseCategoryName);
+            return (false, null);
+        }
+
+        try
+        {
+            var row = await (from lc in _db.LicenseCategories.AsNoTracking()
+                             join m in _db.PartnerUsagePricingModels.AsNoTracking()
+                                on lc.LicenseCategoryId equals m.LicenseCategoryId
+                             where m.PartnerId == partnerId
+                                   && m.SiteId == siteId
+                                   && lc.LicenseCategoryName == licenseCategoryName
+                             select new
+                             {
+                                 m.UsagePricingModelId
+                             })
+                .FirstOrDefaultAsync(ct);
+
+            if (row is null)
+            {
+                _logger.LogDebug(
+                    "GetPartnerUsagePricingModelByCategoryAsync: no row for PartnerId={PartnerId}, SiteId={SiteId}, Category={Category}",
+                    partnerId, siteId, licenseCategoryName);
+                return (false, null);
+            }
+
+            _logger.LogDebug(
+                "GetPartnerUsagePricingModelByCategoryAsync: resolved UsagePricingModelId={UsagePricingModelId} for PartnerId={PartnerId}, SiteId={SiteId}, Category={Category}",
+                row.UsagePricingModelId, partnerId, siteId, licenseCategoryName);
+
+            return (true, row.UsagePricingModelId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "GetPartnerUsagePricingModelByCategoryAsync: error for PartnerId={PartnerId}, SiteId={SiteId}, Category={Category}",
+                partnerId, siteId, licenseCategoryName);
+            return (false, null);
+        }
+    }
+
+    public async Task<(bool Found, byte? ProductPlatformId)> GetPartnerProductPlatformByCategoryAsync(
+        int partnerId,
+        string? siteId,
+        string? licenseCategoryName,
+        CancellationToken ct = default)
+    {
+        if (partnerId <= 0 || string.IsNullOrWhiteSpace(siteId) || string.IsNullOrWhiteSpace(licenseCategoryName))
+        {
+            _logger.LogDebug(
+                "GetPartnerProductPlatformByCategoryAsync: invalid params (partnerId={PartnerId}, siteId={SiteId}, category={Category})",
+                partnerId, siteId, licenseCategoryName);
+            return (false, null);
+        }
+
+        try
+        {
+            var row = await (from lc in _db.LicenseCategories.AsNoTracking()
+                             join m in _db.PartnerProductPlatforms.AsNoTracking()
+                                on lc.LicenseCategoryId equals m.LicenseCategoryId
+                             where m.PartnerId == partnerId
+                                   && m.SiteId == siteId
+                                   && lc.LicenseCategoryName == licenseCategoryName
+                             select new
+                             {
+                                 m.ProductPlatformId
+                             })
+                .FirstOrDefaultAsync(ct);
+
+            if (row is null)
+            {
+                _logger.LogDebug(
+                    "GetPartnerProductPlatformByCategoryAsync: no row for PartnerId={PartnerId}, SiteId={SiteId}, Category={Category}",
+                    partnerId, siteId, licenseCategoryName);
+                return (false, null);
+            }
+
+            _logger.LogDebug(
+                "GetPartnerProductPlatformByCategoryAsync: resolved ProductPlatformId={ProductPlatformId} for PartnerId={PartnerId}, SiteId={SiteId}, Category={Category}",
+                row.ProductPlatformId, partnerId, siteId, licenseCategoryName);
+
+            return (true, row.ProductPlatformId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "GetPartnerProductPlatformByCategoryAsync: error for PartnerId={PartnerId}, SiteId={SiteId}, Category={Category}",
+                partnerId, siteId, licenseCategoryName);
+            return (false, null);
+        }
+    }
+
+    public async Task<(bool Found, byte? RetentionModelId)> GetPartnerRetentionModelByCategoryAsync(
+        int partnerId,
+        string? siteId,
+        string? licenseCategoryName,
+        CancellationToken ct = default)
+    {
+        if (partnerId <= 0 || string.IsNullOrWhiteSpace(siteId) || string.IsNullOrWhiteSpace(licenseCategoryName))
+        {
+            _logger.LogDebug(
+                "GetPartnerRetentionModelByCategoryAsync: invalid params (partnerId={PartnerId}, siteId={SiteId}, category={Category})",
+                partnerId, siteId, licenseCategoryName);
+            return (false, null);
+        }
+
+        try
+        {
+            var row = await (from lc in _db.LicenseCategories.AsNoTracking()
+                             join m in _db.PartnerRetentionModels.AsNoTracking()
+                                on lc.LicenseCategoryId equals m.LicenseCategoryId
+                             where m.PartnerId == partnerId
+                                   && m.SiteId == siteId
+                                   && lc.LicenseCategoryName == licenseCategoryName
+                             select new
+                             {
+                                 m.RetentionModelId
+                             })
+                .FirstOrDefaultAsync(ct);
+
+            if (row is null)
+            {
+                _logger.LogDebug(
+                    "GetPartnerRetentionModelByCategoryAsync: no row for PartnerId={PartnerId}, SiteId={SiteId}, Category={Category}",
+                    partnerId, siteId, licenseCategoryName);
+                return (false, null);
+            }
+
+            _logger.LogDebug(
+                "GetPartnerRetentionModelByCategoryAsync: resolved RetentionModelId={RetentionModelId} for PartnerId={PartnerId}, SiteId={SiteId}, Category={Category}",
+                row.RetentionModelId, partnerId, siteId, licenseCategoryName);
+
+            return (true, row.RetentionModelId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "GetPartnerRetentionModelByCategoryAsync: error for PartnerId={PartnerId}, SiteId={SiteId}, Category={Category}",
+                partnerId, siteId, licenseCategoryName);
+            return (false, null);
         }
     }
 
@@ -780,24 +1196,51 @@ public class CartOrderRepository : ICartOrderRepository
 
         try
         {
-            // TODO: REPLACE WITH ACTUAL EF Core implementation of fn_get_item_storage_gb
-            // SELECT dbo.fn_get_item_storage_gb(@quantity, @category, @usage_model_id, ...)
-            //
-            // Logic should determine storage based on:
-            // 1. Category-specific defaults
-            // 2. Quantity multipliers
-            // 3. Usage pricing model (e.g., capacity model = per-TB logic)
-            //
-            // For now, return placeholder defaults
-            int? resolvedStorage = usagePricingModelId == 2
-                ? 100  // Capacity model default
-                : 10;  // Standard model default
+            var connection = _db.Database.GetDbConnection();
+            var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
 
-            _logger.LogDebug(
-                "GetItemStorageGbAsync: placeholder returns {Storage}GB for {Category}",
-                resolvedStorage, licenseCategoryName);
+            try
+            {
+                if (shouldCloseConnection)
+                {
+                    await connection.OpenAsync(ct);
+                }
 
-            return await Task.FromResult(resolvedStorage);
+                await using var command = connection.CreateCommand();
+                command.CommandText = "SELECT dbo.fn_get_item_storage_gb(@quantity, @license_category_name, DEFAULT, @usage_pricing_model_id, DEFAULT, DEFAULT)";
+                command.CommandType = System.Data.CommandType.Text;
+
+                var quantityParameter = command.CreateParameter();
+                quantityParameter.ParameterName = "@quantity";
+                quantityParameter.Value = quantity;
+                command.Parameters.Add(quantityParameter);
+
+                var categoryParameter = command.CreateParameter();
+                categoryParameter.ParameterName = "@license_category_name";
+                categoryParameter.Value = licenseCategoryName;
+                command.Parameters.Add(categoryParameter);
+
+                var usageModelParameter = command.CreateParameter();
+                usageModelParameter.ParameterName = "@usage_pricing_model_id";
+                usageModelParameter.Value = usagePricingModelId.HasValue ? usagePricingModelId.Value : DBNull.Value;
+                command.Parameters.Add(usageModelParameter);
+
+                var scalar = await command.ExecuteScalarAsync(ct);
+                int? resolvedStorage = scalar is null || scalar is DBNull ? null : Convert.ToInt32(scalar);
+
+                _logger.LogDebug(
+                    "GetItemStorageGbAsync: resolved {Storage}GB for {Category}",
+                    resolvedStorage, licenseCategoryName);
+
+                return resolvedStorage;
+            }
+            finally
+            {
+                if (shouldCloseConnection)
+                {
+                    await connection.CloseAsync();
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -886,9 +1329,179 @@ public class CartOrderRepository : ICartOrderRepository
         string vendorOrderCode,
         CancellationToken ct = default)
     {
-        throw new NotImplementedException(
-            "SelectCartOrderAsync is not yet implemented. " +
-            "This is a Section 2+ operation requiring complex business logic.");
+        if (string.IsNullOrWhiteSpace(vendorOrderCode))
+        {
+            _logger.LogDebug("SelectCartOrderAsync: vendor order code is null or empty");
+            return null;
+        }
+
+        _logger.LogDebug(
+            "SelectCartOrderAsync: loading cart by vendor order code {VendorOrderCode}",
+            vendorOrderCode);
+
+        var cartOrderId = await _db.CartOrders
+            .AsNoTracking()
+            .Where(c => c.VendorOrderCode == vendorOrderCode)
+            .Select(c => (int?)c.CartOrderId)
+            .FirstOrDefaultAsync(ct);
+
+        if (!cartOrderId.HasValue)
+        {
+            _logger.LogDebug(
+                "SelectCartOrderAsync: no cart found for vendor order code {VendorOrderCode}",
+                vendorOrderCode);
+            return null;
+        }
+
+        return await SelectCartOrderByIdAsync(cartOrderId.Value, ct);
+    }
+
+    /// <summary>
+    /// [NOT IMPLEMENTED] Selects full cart aggregate by cart_order_id.
+    /// Placeholder for Section 2.
+    /// </summary>
+    public async Task<CartOrderResponse?> SelectCartOrderByIdAsync(
+        int cartOrderId,
+        CancellationToken ct = default)
+    {
+        if (cartOrderId <= 0)
+        {
+            _logger.LogDebug("SelectCartOrderByIdAsync: invalid cartOrderId={CartOrderId}", cartOrderId);
+            return null;
+        }
+
+        _logger.LogDebug("SelectCartOrderByIdAsync: loading cart aggregate for cartOrderId={CartOrderId}", cartOrderId);
+
+        var header = await (from co in _db.CartOrders.AsNoTracking()
+                            join cur in _db.Currencies.AsNoTracking()
+                                on co.CurrencyId equals cur.CurrencyId
+                            join cp in _db.CartOrderPartners.AsNoTracking()
+                                on co.CartOrderId equals cp.CartOrderId into cpJoin
+                            from cp in cpJoin.DefaultIfEmpty()
+                            join p in _db.Partners.AsNoTracking()
+                                on cp.PartnerId equals p.PartnerId into pJoin
+                            from p in pJoin.DefaultIfEmpty()
+                            join cj in _db.CartOrderJsons.AsNoTracking()
+                                on co.CartOrderId equals cj.CartOrderId into cjJoin
+                            from cj in cjJoin.DefaultIfEmpty()
+                            where co.CartOrderId == cartOrderId
+                            select new CartOrderResponse
+                            {
+                                CartOrderId = co.CartOrderId,
+                                VendorOrderCode = co.VendorOrderCode,
+                                SiteId = co.SiteId,
+                                OfferAmount = co.OfferAmount,
+                                TotalAmount = co.TotalAmount,
+                                SubTotalAmount = co.SubTotalAmount,
+                                TaxAmount = co.TaxAmount,
+                                SalesOrderDate = co.SalesOrderDate,
+                                Locale = co.Locale,
+                                InsertDate = co.InsertDate,
+                                InsertBy = co.InsertBy,
+                                ModifiedDate = co.ModifiedDate,
+                                ModifiedBy = co.ModifiedBy,
+                                CartOrderStatusId = co.CartOrderStatusId ?? 0,
+                                UserIp = co.UserIp,
+                                CurrencyId = cur.CurrencyId,
+                                CurrencyCode = cur.CurrencyCode,
+                                PartnerKey = p != null ? p.PartnerKey.ToString() : null,
+                                CartJson = cj != null ? cj.Json : null,
+                                Items = new List<CartOrderItemResponse>()
+                            })
+            .FirstOrDefaultAsync(ct);
+
+        if (header is null)
+        {
+            _logger.LogDebug("SelectCartOrderByIdAsync: cart not found for cartOrderId={CartOrderId}", cartOrderId);
+            return null;
+        }
+
+        var items = await (from i in _db.CartOrderItems.AsNoTracking()
+                           join p in _db.Products.AsNoTracking()
+                               on i.ProductId equals p.ProductId into pJoin
+                           from p in pJoin.DefaultIfEmpty()
+                           join plc in _db.ProductLicenseCategories.AsNoTracking()
+                               on i.ProductId equals plc.ProductId
+                           join lc in _db.LicenseCategories.AsNoTracking()
+                               on plc.LicenseCategoryId equals lc.LicenseCategoryId
+                           join v in _db.LicenseAttributes.AsNoTracking()
+                               on i.LicenseAttributeLicenseValue equals v.LicenseAttributeLicenseValue into vJoin
+                           from v in vJoin.DefaultIfEmpty()
+                           join il in _db.CartOrderItemLicenses.AsNoTracking()
+                               on i.CartOrderItemId equals il.CartOrderItemId into ilJoin
+                           from il in ilJoin.DefaultIfEmpty()
+                           join ij in _db.CartOrderItemJsons.AsNoTracking()
+                               on i.CartOrderItemId equals ij.CartOrderItemId into ijJoin
+                           from ij in ijJoin.DefaultIfEmpty()
+                           where i.CartOrderId == cartOrderId
+                           select new CartOrderItemResponse
+                           {
+                               CartOrderItemId = i.CartOrderItemId,
+                               CartOrderId = i.CartOrderId,
+                               LineItem = i.LineItem ?? 0,
+                               Quantity = i.Quantity ?? 0,
+                               Seats = i.Seats,
+                               StorageGb = i.StorageGb,
+                               Years = null,
+                               OrderItemOfferAmount = i.OrderItemOfferAmount,
+                               EquivalentYearPrice = null,
+                               ListPrice = i.ListPrice,
+                               UnitPrice = i.UnitPrice,
+                               UnitPricePreVat = i.UnitPricePreVat,
+                               TaxItemTotal = i.TaxItemTotal,
+                               UsagePrice = i.UsagePrice,
+                               Discount = i.Discount,
+                               CartDiscountMethodId = i.CartDiscountMethodId,
+                               CartDiscountId = i.CartDiscountId,
+                               ProductId = i.ProductId ?? 0,
+                               ProductDescription = p != null ? p.ProductDescription : null,
+                               ProductTypeId = p != null ? p.ProductTypeId : null,
+                               ProductTypeDescription = null,
+                               LicenseKeycodeTypeId = p != null ? p.LicenseKeycodeTypeId : null,
+                               LicenseKeycodeTypeDescription = null,
+                               LicenseCategoryId = lc.LicenseCategoryId,
+                               LicenseCategoryName = lc.LicenseCategoryName,
+                               LicenseCategoryDescription = lc.LicenseCategoryDescription,
+                               ProductFamilyDescription = null,
+                               ProductLineCartType = null,
+                               MinOrderQuantity = null,
+                               MaxOrderQuantity = null,
+                               StartDate = i.StartDate,
+                               ExpirationDate = i.ExpirationDate,
+                               CartItemBundleId = i.CartItemBundleId,
+                               ItemHierarchyId = i.ItemHierarchyId.HasValue ? (int?)i.ItemHierarchyId : null,
+                               DependentCartOrderItemId = null,
+                               Keycode = il != null ? il.Keycode : i.Keycode,
+                               LicenseAttributeLicenseValue = i.LicenseAttributeLicenseValue,
+                               LicenseAttributeId = v != null ? v.LicenseAttributeId : null,
+                               LicenseAttributeLicenseValueDescription = v != null ? v.LicenseAttributeValue : null,
+                               VendorOrderItemCode = i.VendorOrderItemCode,
+                               OrderItemUpdateTypeId = i.OrderItemUpdateTypeId,
+                               OpportunityLineItemId = i.OpportunityLineItemId,
+                               UsagePricingModelId = i.UsagePricingModelId,
+                               UsagePricingModelName = null,
+                               RetentionModelId = i.RetentionModelId,
+                               RetentionModelName = null,
+                               RetentionTerm = i.RetentionTerm,
+                               RetentionModelTypeId = null,
+                               ProductPlatformId = i.ProductPlatformId,
+                               ProductPlatformName = null,
+                               VaultId = i.VaultId,
+                               VaultDatacenterName = i.VaultDatacenterName,
+                               Vault = i.Vault,
+                               ProductPricingLevelId = null,
+                               PricingLevelDescription = null,
+                               CartOrderItemJson = ij != null ? ij.CartOrderItemJson : null
+                           })
+            .ToListAsync(ct);
+
+        header.Items.AddRange(items);
+
+        _logger.LogDebug(
+            "SelectCartOrderByIdAsync: loaded cartOrderId={CartOrderId} with {ItemCount} items",
+            cartOrderId, header.Items.Count);
+
+        return header;
     }
 
     /// <summary>

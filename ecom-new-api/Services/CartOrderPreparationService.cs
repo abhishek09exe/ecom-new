@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using ecom_new_api.Data.Entities;
 using ecom_new_api.Models.Requests;
+using ecom_new_api.Models.Responses;
 using ecom_new_api.Repositories;
 
 namespace ecom_new_api.Services;
@@ -87,11 +88,27 @@ public class CartOrderPreparationService
             bundle.HasUtility = await IsUtilityBillingModelAsync(bundle.LicenseAttributeLicenseValue, ct);
         }
 
+        // 2.1) Resolve license context before item-table parsing so Section 1.4 can assign
+        //      license_keycode_type_id from the already-resolved Section 1.3.1 variable.
+        var licenseKeycode = bundle.Keycode
+            ?? request.Key
+            ?? request.Items.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Keycode))?.Keycode;
+
+        var license = await LoadLicenseByKeycodeAsync(licenseKeycode, ct);
+
+        if (license is not null)
+        {
+            license.LicenseAttributeLicenseValueFromLicense = license.LicenseAttributeLicenseValue;
+            license.LicenseKeycodeTypeId = ApplyLicenseKeycodeTypeFallback(bundle, license);
+        }
+
+        var resolvedLicenseKeycodeTypeId = license?.LicenseKeycodeTypeId ?? bundle.LicenseKeycodeTypeId;
+
         var itemPayloads = request.Items.Select(i => new ItemJsonPayload
         {
             ProductId = i.ProductId,
             LicenseCategoryName = i.LicenseCategoryName,
-            Quantity = i.Quantity ?? 1,
+            Quantity = i.Quantity ?? 0,
             LicenseSeats = i.LicenseSeats,
             StorageGb = i.StorageGb,
             Years = i.Years,
@@ -109,58 +126,73 @@ public class CartOrderPreparationService
             RetentionTerm = i.RetentionTerm,
             ProductPlatformId = i.ProductPlatformId,
             LicenseKeycodeTypeId = i.LicenseKeycodeTypeId,
+            VendorOrderItemCode = i.VendorOrderItemCode,
+            Discount = i.Discount,
+            CartDiscountMethodId = i.CartDiscountMethodId,
+            OpportunityLineItemId = i.OpportunityLineItemId,
+            UnitPrice = i.UnitPrice,
+            ItemTotal = i.ItemTotal,
+            UsagePrice = i.UsagePrice,
+            VaultId = i.VaultId,
+            Vault = i.Vault,
+            SapMaterialNumber = i.SapMaterialNumber,
             AmendedContract = i.AmendedContract,
         }).ToList();
 
         var itemJson = JsonSerializer.Serialize(itemPayloads, ItemJsonPayload.SerializerOptions);
-        var items = await ParseItemJsonAsync(itemJson, ct);
+        var items = await ParseItemJsonAsync(itemJson, resolvedLicenseKeycodeTypeId, ct);
         ValidateOtsfRetentionModel(items);
 
         // 3) Optional existing cart/item context
-        Models.Responses.CartOrderResponse? cart = null;
+        CartOrderResponse? cart = null;
         if (!string.IsNullOrWhiteSpace(userContext.VendorOrderCode))
         {
-            cart = await LoadCartByVendorOrderCodeAsync(userContext.VendorOrderCode, ct);
+            var cartLookup = await LoadCartLookupByVendorOrderCodeAsync(userContext.VendorOrderCode, ct);
+            if (cartLookup is not null)
+            {
+                cart = await LoadCartByCartOrderIdAsync(cartLookup.CartOrderId, ct);
+            }
         }
 
         var existingItems = await LoadExistingItemsAsync(cart, ct);
 
-        // 4) License + locale + product metadata loading
-        var licenseKeycode = bundle.Keycode
-            ?? request.Key
-            ?? request.Items.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.Keycode))?.Keycode;
-
-        var license = await LoadLicenseByKeycodeAsync(licenseKeycode, ct);
-
-        if (license is not null)
-        {
-            license.LicenseAttributeLicenseValueFromLicense = license.LicenseAttributeLicenseValue;
-            license.LicenseAttributeLicenseValue = bundle.LicenseAttributeLicenseValue ?? license.LicenseAttributeLicenseValue;
-            license.LicenseKeycodeTypeId = ApplyLicenseKeycodeTypeFallback(bundle, license);
-        }
+        // 4) Locale + product metadata loading
 
         var products = await PrepareProductsFromItemsAsync(items, ct);
-        EnrichItemsWithLicenseCategoryId(items, products, license);
+        await EnrichItemsWithLicenseCategoryId(items, ct);
         NormalizeDownRevCategoryNames(items, license);
 
         var (languageCode, locationCode) = await LoadLocaleCodesByLocaleAsync(userContext.Locale, ct);
 
         int? productLineId = null;
-        var firstLicenseCategoryId = items.Select(i => i.LicenseCategoryId).FirstOrDefault(x => x.HasValue);
-        if (firstLicenseCategoryId.HasValue)
+
+        // SQL Section 1.9.1:
+        // IF @product_line_id IS NULL
+        // BEGIN
+        //     SELECT @product_line_id = pl.product_line_id
+        //     FROM @existing_item_table i
+        //     INNER JOIN license_category lc
+        //         ON lc.license_category_name = i.license_category_name
+        //     INNER JOIN license_category_product_line pl
+        //         ON pl.license_category_id = lc.license_category_id
+        //        AND pl.language_code = @language_code
+        //        AND pl.location_code = @location_code
+        // END
+        //
+        // Existing items are loaded in Section 1.8 and already carry LicenseCategoryId,
+        // so use the first available category from @existing_item_table semantics.
+
+        var firstLicenseCategoryId = existingItems
+            .Select(i => i.LicenseCategoryId)
+            .FirstOrDefault(x => x.HasValue);
+
+        if (!productLineId.HasValue && firstLicenseCategoryId.HasValue)
         {
             productLineId = await LoadProductLineByLicenseCategoryAsync(
                 firstLicenseCategoryId.Value,
                 languageCode,
                 locationCode,
                 ct);
-        }
-
-        if (!productLineId.HasValue)
-        {
-            productLineId = products.Values
-                .Select(p => p.ProductLineId)
-                .FirstOrDefault(x => x.HasValue);
         }
 
         productLineId = RemapProductLineId(productLineId);
@@ -197,13 +229,14 @@ public class CartOrderPreparationService
 
         // 6) Item-level enrichments
         EnrichBillingModelFallback(items, ct);
-        EnrichUsagePricingModel(items, license);
-        EnrichRetentionModel(items, license);
-        EnrichProductPlatform(items, license);
+        await EnrichUsagePricingModel(items, license, userContext.PartnerId, userContext.SiteId, ct);
+        await EnrichRetentionModel(items, license, userContext.PartnerId, userContext.SiteId, ct);
+        await EnrichProductPlatform(items, license, userContext.PartnerId, userContext.SiteId, ct);
+        
 
         var sfdcOverrides = BuildSfdcUnitOverrides(userContext.SiteId, items, license);
         CalculateUpgradeLicenseSeats(items, license, sfdcOverrides);
-        ApplyMonthlyToAnnualConversion(items, license, bundle.LicenseAttributeLicenseValue, nextProcessDate: null);
+        ApplyMonthlyToAnnualConversion(items, license, bundle.LicenseAttributeLicenseValue, license?.NextProcessDate);
         await EnrichDefaultStorageGbWithRepositoryAsync(items, ct);
 
         // 7) Final aggregate model
@@ -216,7 +249,7 @@ public class CartOrderPreparationService
         preparedModel.LanguageCode = languageCode;
         preparedModel.LocationCode = locationCode;
         preparedModel.LicenseId = license?.LicenseId;
-        preparedModel.NextProcessDate = null;
+        preparedModel.NextProcessDate = license?.NextProcessDate;
         preparedModel.PartnerId = userContext.PartnerId;
         preparedModel.HasUtility = bundle.HasUtility;
 
@@ -235,6 +268,114 @@ public class CartOrderPreparationService
     // ══════════════════════════════════════════════════════════════════════════════════
 
     /// <summary>
+    /// SECTION 1.1: Lightweight existing-cart lookup by <c>vendor_order_code</c>.
+    ///
+    /// SQL Section 1.1 from <c>usp_cart_insert_cart_order_item</c>:
+    /// <code>
+    /// SELECT @cart_order_id = cart_order_id,
+    ///        @currency_id = currency_id
+    /// FROM dbo.cart_order
+    /// WHERE vendor_order_code = @vendor_order_code
+    /// </code>
+    ///
+    /// Pure lookup only: no cart items, partner rows, cart_json, or navigation loading.
+    /// </summary>
+    /// <param name="vendorOrderCode">Vendor order code lookup key.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Lookup row with CartOrderId and CurrencyId, or null when not found.</returns>
+    public async Task<CartOrderLookupResponse?> LoadCartLookupByVendorOrderCodeAsync(
+        string vendorOrderCode,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(vendorOrderCode))
+        {
+            _logger.LogWarning("LoadCartLookupByVendorOrderCodeAsync called with null/empty code");
+            return null;
+        }
+
+        _logger.LogDebug(
+            "LoadCartLookupByVendorOrderCodeAsync: checking vendor order code {VendorOrderCode}",
+            vendorOrderCode);
+
+        return await _repository.GetCartLookupByVendorOrderCodeAsync(vendorOrderCode, ct);
+    }
+
+    /// <summary>
+    /// SECTION 1.2: Lightweight cart context lookup by <c>cart_order_id</c>.
+    ///
+    /// SQL Section 1.2 from <c>usp_cart_insert_cart_order_item</c>:
+    /// <code>
+    /// SELECT @locale = co.locale,
+    ///        @site_id = co.site_id,
+    ///        @partner_id = cp.partner_id
+    /// FROM dbo.cart_order co
+    /// LEFT JOIN dbo.cart_order_partner cp
+    ///     ON cp.cart_order_id = co.cart_order_id
+    /// WHERE co.cart_order_id = @cart_order_id
+    /// </code>
+    ///
+    /// Pure lookup only: no locale conversion, language/location resolution,
+    /// or business logic.
+    /// </summary>
+    /// <param name="cartOrderId">Internal cart order identifier.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Lookup row with Locale, SiteId, PartnerId, or null when not found.</returns>
+    public async Task<CartOrderContextLookupResponse?> LoadCartContextByCartOrderIdAsync(
+        int cartOrderId,
+        CancellationToken ct = default)
+    {
+        if (cartOrderId <= 0)
+        {
+            _logger.LogWarning("LoadCartContextByCartOrderIdAsync called with invalid cartOrderId: {CartOrderId}", cartOrderId);
+            return null;
+        }
+
+        _logger.LogDebug(
+            "LoadCartContextByCartOrderIdAsync: checking cart order ID {CartOrderId}",
+            cartOrderId);
+
+        return await _repository.GetCartContextByCartOrderIdAsync(cartOrderId, ct);
+    }
+
+    /// <summary>
+    /// SECTION 1.1: Load full cart aggregate by <c>cart_order_id</c>.
+    ///
+    /// Purpose: Retrieve full cart details once SQL Section 1.1 has already resolved
+    /// <c>cart_order_id</c>, avoiding a second lookup on <c>cart_order</c> by vendor code.
+    /// </summary>
+    /// <param name="cartOrderId">Internal cart order identifier.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Full cart aggregate if found, otherwise null.</returns>
+    public async Task<CartOrderResponse?> LoadCartByCartOrderIdAsync(
+        int cartOrderId,
+        CancellationToken ct = default)
+    {
+        if (cartOrderId <= 0)
+        {
+            _logger.LogWarning("LoadCartByCartOrderIdAsync called with invalid cartOrderId: {CartOrderId}", cartOrderId);
+            return null;
+        }
+
+        _logger.LogDebug("Loading full cart aggregate by cart order ID: {CartOrderId}", cartOrderId);
+
+        var cart = await _repository.SelectCartOrderByIdAsync(cartOrderId, ct);
+        if (cart is null)
+        {
+            _logger.LogWarning("Cart not found for cartOrderId: {CartOrderId}", cartOrderId);
+            return null;
+        }
+
+        _logger.LogInformation(
+            "Cart loaded: CartOrderId={CartOrderId}, VendorOrderCode={Code}, Items={ItemCount}, Partner={Partner}",
+            cartOrderId,
+            cart.VendorOrderCode,
+            cart.Items?.Count ?? 0,
+            cart.PartnerKey ?? "none");
+
+        return cart;
+    }
+
+    /// <summary>
     /// SECTION 1.1: Load existing cart by vendor order code
     /// 
     /// Purpose: Retrieve the full cart aggregate (header + items + partner info)
@@ -248,7 +389,7 @@ public class CartOrderPreparationService
     /// 
     /// Returns: Null if cart doesn't exist, full CartOrderResponse if found
     /// </summary>
-    public async Task<Models.Responses.CartOrderResponse?> LoadCartByVendorOrderCodeAsync(
+    public async Task<CartOrderResponse?> LoadCartByVendorOrderCodeAsync(
         string vendorOrderCode,
         CancellationToken ct = default)
     {
@@ -261,20 +402,14 @@ public class CartOrderPreparationService
 
         _logger.LogDebug("Loading cart by vendor order code: {VendorOrderCode}", vendorOrderCode);
 
-        // Query repository (maps to usp_cart_select_cart_order + items)
-        var cart = await _repository.SelectCartOrderAsync(vendorOrderCode, ct);
-
-        if (cart is null)
+        var lookup = await LoadCartLookupByVendorOrderCodeAsync(vendorOrderCode, ct);
+        if (lookup is null)
         {
             _logger.LogWarning("Cart not found for code: {VendorOrderCode}", vendorOrderCode);
             return null;
         }
 
-        _logger.LogInformation(
-            "Cart loaded: VendorOrderCode={Code}, Items={ItemCount}, Partner={Partner}",
-            cart.VendorOrderCode, cart.Items?.Count ?? 0, cart.PartnerKey ?? "none");
-
-        return cart;
+        return await LoadCartByCartOrderIdAsync(lookup.CartOrderId, ct);
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════
@@ -342,6 +477,218 @@ public class CartOrderPreparationService
             context.CurrencyCode ?? "default");
 
         return context;
+    }
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1.2: Resolve Partner ID
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// SECTION 1.2: Resolve <c>partner_id</c> from a <c>partner_key</c> GUID string.
+    ///
+    /// Purpose: Translate the caller-supplied <c>PartnerKey</c> (a GUID) into the internal
+    /// integer <c>partner_id</c> that is stored on <c>cart_order_partner</c>.  The resolved
+    /// value is written back onto <see cref="CartOrderUserContext.PartnerId"/>; the original
+    /// <see cref="CartOrderUserContext.PartnerKey"/> is always preserved.
+    ///
+    /// SQL equivalent: <c>SELECT partner_id FROM partner WHERE partner_key = @partner_key</c>
+    ///
+    /// Non-fatal: a missing or unrecognised key logs a warning and leaves <c>PartnerId = null</c>.
+    /// </summary>
+    /// <param name="context">Context object to mutate; <c>PartnerId</c> is set in-place.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task ResolvePartnerIdAsync(
+        CartOrderUserContext context,
+        CancellationToken ct = default)
+    {
+        if (context is null) throw new ArgumentNullException(nameof(context));
+
+        if (string.IsNullOrWhiteSpace(context.PartnerKey))
+        {
+            _logger.LogDebug("ResolvePartnerIdAsync: PartnerKey is absent – skipping partner lookup");
+            return;
+        }
+
+        _logger.LogDebug("ResolvePartnerIdAsync: looking up partner for key {PartnerKey}", context.PartnerKey);
+
+        try
+        {
+            var partnerId = await _repository.LookupPartnerIdByKeyAsync(context.PartnerKey, ct);
+
+            if (partnerId.HasValue)
+            {
+                context.PartnerId = partnerId.Value;
+                _logger.LogDebug(
+                    "ResolvePartnerIdAsync: resolved PartnerKey={Key} → PartnerId={Id}",
+                    context.PartnerKey, partnerId.Value);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "ResolvePartnerIdAsync: partner not found for key {PartnerKey} – continuing without partner",
+                    context.PartnerKey);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "ResolvePartnerIdAsync: error looking up partner for key {PartnerKey} – continuing without partner",
+                context.PartnerKey);
+        }
+    }
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1.2.1: Load Locale Mapping
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// SECTION 1.2.1: Map locale to language and location codes
+    /// 
+    /// Purpose: Translate @locale string (e.g., 'en_US', 'de_DE', 'ja_JP') 
+    /// to language_code and location_code pair needed for regional lookups.
+    /// 
+    /// Database Query:
+    ///   SELECT language_code, location_code FROM locale_language_location 
+    ///   WHERE locale = @locale
+    ///   OR CALL fn_locale_to_lang_loc(@locale, @language_code OUT, @location_code OUT)
+    /// 
+    /// Returns: Tuple (languageCode, locationCode), or defaults ("en", "US") if not found
+    /// </summary>
+    public async Task<(string LanguageCode, string LocationCode)> LoadLocaleCodesByLocaleAsync(
+        string? locale,
+        CancellationToken ct = default)
+    {
+        // Default: English, United States
+        const string defaultLanguage = "en";
+        const string defaultLocation = "US";
+
+        // Early return: null/empty locale
+        if (string.IsNullOrWhiteSpace(locale))
+        {
+            _logger.LogDebug("Locale is null or empty, using defaults: {Language}/{Location}", 
+                defaultLanguage, defaultLocation);
+            return (defaultLanguage, defaultLocation);
+        }
+
+        _logger.LogDebug("Loading locale codes for locale: {Locale}", locale);
+
+        try
+        {
+            // Query repository for locale mapping
+            var localeEntity = await _repository.GetLocaleByCodeAsync(locale, ct);
+
+            if (localeEntity is null)
+            {
+                _logger.LogWarning("Locale mapping not found: {Locale}, using defaults", locale);
+                return (defaultLanguage, defaultLocation);
+            }
+
+            var languageCode = localeEntity.LanguageCode ?? defaultLanguage;
+            var locationCode = localeEntity.LocationCode ?? defaultLocation;
+
+            _logger.LogDebug(
+                "Locale codes loaded: Locale={Locale}, Language={Language}, Location={Location}",
+                locale, languageCode, locationCode);
+
+            return (languageCode, locationCode);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error loading locale codes for {Locale}, using defaults", locale);
+            return (defaultLanguage, defaultLocation);
+        }
+    }
+
+
+    /// <summary>
+    /// SECTION 1.2.2: Apply currency fallback using partner configuration.
+    ///
+    /// SQL equivalent:
+    /// <code>
+    /// IF @currency_id IS NULL AND @partner_id IS NOT NULL
+    /// BEGIN
+    ///   SELECT @currency_code = config_value
+    ///   FROM partner_configuration pc
+    ///   WHERE pc.partner_id = @partner_id
+    ///     AND pc.partner_configuration_id = 15
+    ///
+    ///   IF @currency_code IS NOT NULL
+    ///     SELECT @currency_id = c.currency_id
+    ///     FROM currency c WHERE c.currency_code = @currency_code
+    /// END
+    ///
+    /// IF @currency_id IS NULL
+    ///   SELECT @currency_id = 1  -- USD default
+    /// </code>
+    ///
+    /// Non-fatal: logs warnings and falls back to USD (1) if lookup fails.
+    /// </summary>
+    /// <param name="userContext">User context to update with resolved currency.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task ApplyCurrencyFallbackAsync(
+        CartOrderUserContext userContext,
+        CancellationToken ct = default)
+    {
+        if (userContext is null)
+        {
+            _logger.LogDebug("ApplyCurrencyFallbackAsync: userContext is null");
+            return;
+        }
+
+        // Already resolved?
+        if (userContext.CurrencyId.HasValue)
+        {
+            _logger.LogDebug(
+                "ApplyCurrencyFallbackAsync: currency already resolved to {CurrencyId}",
+                userContext.CurrencyId);
+            return;
+        }
+
+        // No partner context?
+        if (!userContext.PartnerId.HasValue)
+        {
+            _logger.LogDebug("ApplyCurrencyFallbackAsync: no partner ID, applying default USD");
+            userContext.CurrencyId = 1;  // USD default
+            return;
+        }
+
+        _logger.LogDebug(
+            "ApplyCurrencyFallbackAsync: attempting partner configuration fallback for PartnerId={PartnerId}",
+            userContext.PartnerId);
+
+        try
+        {
+            // TODO: REPLACE WITH ACTUAL partner_configuration lookup
+            // Query partner_configuration WHERE partner_id = @partner_id AND partner_configuration_id = 15
+            // For now, use a placeholder that returns null (forces USD default)
+            string? partnerCurrencyCode = null;
+
+            if (!string.IsNullOrWhiteSpace(partnerCurrencyCode))
+            {
+                var currencyId = await _repository.LookupCurrencyIdByCodeAsync(partnerCurrencyCode, ct);
+
+                if (currencyId.HasValue)
+                {
+                    userContext.CurrencyId = currencyId;
+                    _logger.LogInformation(
+                        "ApplyCurrencyFallbackAsync: PartnerId={PartnerId} config resolved to {Code} (CurrencyId={Id})",
+                        userContext.PartnerId, partnerCurrencyCode, currencyId);
+                    return;
+                }
+            }
+
+            _logger.LogDebug(
+                "ApplyCurrencyFallbackAsync: partner configuration lookup for PartnerId={PartnerId} returned no currency code",
+                userContext.PartnerId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "ApplyCurrencyFallbackAsync: error in partner configuration lookup for PartnerId={PartnerId}",
+                userContext.PartnerId);
+        }
+
+        // Fall back to USD (1)
+        userContext.CurrencyId = 1;
+        _logger.LogInformation("ApplyCurrencyFallbackAsync: applying default CurrencyId=1 (USD)");
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════
@@ -441,210 +788,6 @@ public class CartOrderPreparationService
             return null;
         }
     }
-
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.4 (JSON): Parse Item JSON Array
-    // ══════════════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// SECTION 1.4: Parse <c>@item_json</c> array into a list of <see cref="CartOrderItemContext"/> objects.
-    ///
-    /// Purpose: Extract the collection of new line-items supplied by the caller as a JSON array.
-    /// This is the C# equivalent of the SQL OPENJSON(@item_json) WITH (…) pattern inside
-    /// <c>usp_cart_insert_cart_order_item</c>.  No database calls are made here.
-    ///
-    /// Populated fields per item:
-    /// <list type="bullet">
-    ///   <item><c>product_id</c></item>
-    ///   <item><c>license_category_name</c></item>
-    ///   <item><c>quantity</c></item>
-    ///   <item><c>license_seats</c></item>
-    ///   <item><c>storage_gb</c></item>
-    ///   <item><c>years</c></item>
-    ///   <item><c>item_hierarchy_id</c></item>
-    ///   <item><c>cart_item_bundle_id</c></item>
-    ///   <item><c>license_attribute_license_value</c></item>
-    ///   <item><c>usage_pricing_model_id</c></item>
-    ///   <item><c>retention_model_id</c></item>
-    ///   <item><c>retention_term</c></item>
-    ///   <item><c>product_platform_id</c></item>
-    ///   <item><c>start_date</c></item>
-    ///   <item><c>expiration_date</c></item>
-    ///   <item><c>keycode</c></item>
-    /// </list>
-    ///
-    /// Items with <c>product_id = 0</c> are skipped (mirrors SQL behaviour where unresolvable
-    /// product rows are ignored).
-    /// </summary>
-    /// <param name="itemJson">
-    ///   Raw JSON array string from the <c>@item_json</c> parameter.
-    ///   Example: <c>[{"product_id":42,"quantity":1,"years":1}]</c>
-    /// </param>
-    /// <param name="ct">Cancellation token (reserved for future async use).</param>
-    /// <returns>
-    ///   List of populated <see cref="CartOrderItemContext"/> objects (never null; empty on failure).
-    /// </returns>
-    public Task<List<CartOrderItemContext>> ParseItemJsonAsync(
-        string? itemJson,
-        CancellationToken ct = default)
-    {
-        var result = new List<CartOrderItemContext>();
-
-        // Early return: null/empty JSON
-        if (string.IsNullOrWhiteSpace(itemJson))
-        {
-            _logger.LogDebug("ParseItemJsonAsync: itemJson is null or empty – returning empty list");
-            return Task.FromResult(result);
-        }
-
-        _logger.LogDebug("ParseItemJsonAsync: parsing item JSON array ({Length} chars)", itemJson.Length);
-
-        try
-        {
-            var rawItems = JsonSerializer.Deserialize<List<ItemJsonPayload>>(
-                itemJson,
-                ItemJsonPayload.SerializerOptions);
-
-            if (rawItems is null || rawItems.Count == 0)
-            {
-                _logger.LogWarning("ParseItemJsonAsync: JSON produced no items");
-                return Task.FromResult(result);
-            }
-
-            for (int i = 0; i < rawItems.Count; i++)
-            {
-                var raw = rawItems[i];
-
-                // Skip items with no product ID (mirrors SQL implicit filter)
-                if (raw.ProductId <= 0)
-                {
-                    _logger.LogDebug("ParseItemJsonAsync: skipping item[{Index}] – ProductId is 0 or missing", i);
-                    continue;
-                }
-
-                var context = new CartOrderItemContext
-                {
-                    // CartOrderItemId / CartOrderId are 0 for NEW items (not yet inserted)
-                    CartOrderItemId  = 0,
-                    CartOrderId      = 0,
-                    LineItem         = i + 1,
-
-                    ProductId            = raw.ProductId,
-                    LicenseCategoryName  = NullIfEmpty(raw.LicenseCategoryName),
-                    Quantity             = raw.Quantity > 0 ? raw.Quantity : 1,
-                    LicenseSeats         = raw.LicenseSeats,
-                    TotalLicenseSeats    = raw.LicenseSeats,  // SQL: total_license_seats = license_seats (initialized from input)
-                    StorageGb            = raw.StorageGb,
-                    Years                = raw.Years,
-                    StartDate            = raw.StartDate,
-                    ExpirationDate       = raw.ExpirationDate,
-                    VendorExpirationDate = raw.VendorExpirationDate,
-                    Keycode              = NullIfEmpty(raw.Keycode),
-
-                    ItemHierarchyId              = raw.ItemHierarchyId,
-                    CartItemBundleId             = raw.CartItemBundleId,
-                    LicenseAttributeLicenseValue = raw.LicenseAttributeLicenseValue,
-                    UsagePricingModelId          = raw.UsagePricingModelId,
-                    RetentionModelId             = raw.RetentionModelId,
-                    RetentionTerm                = raw.RetentionTerm,
-                    ProductPlatformId            = raw.ProductPlatformId,
-                    LicenseKeycodeTypeId         = raw.LicenseKeycodeTypeId,
-                    AmendedContract              = NullIfEmpty(raw.AmendedContract),  // SQL: CASE WHEN amended_contract = '' THEN NULL ELSE amended_contract END
-
-                    LoadedAt = DateTime.UtcNow
-                };
-
-                result.Add(context);
-
-                _logger.LogDebug(
-                    "ParseItemJsonAsync: item[{Index}] – ProductId={ProductId}, " +
-                    "Category={Category}, Qty={Qty}, Seats={Seats}, Hierarchy={Hierarchy}",
-                    i, context.ProductId, context.LicenseCategoryName ?? "(none)",
-                    context.Quantity, context.LicenseSeats, context.ItemHierarchyId);
-            }
-
-            _logger.LogInformation(
-                "ParseItemJsonAsync: parsed {Parsed} items from {Total} raw entries",
-                result.Count, rawItems.Count);
-
-            return Task.FromResult(result);
-        }
-        catch (JsonException ex)
-        {
-            _logger.LogError(ex,
-                "ParseItemJsonAsync: malformed JSON – returning empty list. JSON snippet: {Snippet}",
-                itemJson.Length > 200 ? itemJson[..200] : itemJson);
-
-            return Task.FromResult(result);
-        }
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // Private helpers
-    // ══════════════════════════════════════════════════════════════════════════════════
-
-    /// <summary>Returns <see langword="null"/> when <paramref name="value"/> is null or whitespace.</summary>
-    private static string? NullIfEmpty(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value;
-
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.2: Resolve Partner ID
-    // ══════════════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// SECTION 1.2: Resolve <c>partner_id</c> from a <c>partner_key</c> GUID string.
-    ///
-    /// Purpose: Translate the caller-supplied <c>PartnerKey</c> (a GUID) into the internal
-    /// integer <c>partner_id</c> that is stored on <c>cart_order_partner</c>.  The resolved
-    /// value is written back onto <see cref="CartOrderUserContext.PartnerId"/>; the original
-    /// <see cref="CartOrderUserContext.PartnerKey"/> is always preserved.
-    ///
-    /// SQL equivalent: <c>SELECT partner_id FROM partner WHERE partner_key = @partner_key</c>
-    ///
-    /// Non-fatal: a missing or unrecognised key logs a warning and leaves <c>PartnerId = null</c>.
-    /// </summary>
-    /// <param name="context">Context object to mutate; <c>PartnerId</c> is set in-place.</param>
-    /// <param name="ct">Cancellation token.</param>
-    public async Task ResolvePartnerIdAsync(
-        CartOrderUserContext context,
-        CancellationToken ct = default)
-    {
-        if (context is null) throw new ArgumentNullException(nameof(context));
-
-        if (string.IsNullOrWhiteSpace(context.PartnerKey))
-        {
-            _logger.LogDebug("ResolvePartnerIdAsync: PartnerKey is absent – skipping partner lookup");
-            return;
-        }
-
-        _logger.LogDebug("ResolvePartnerIdAsync: looking up partner for key {PartnerKey}", context.PartnerKey);
-
-        try
-        {
-            var partnerId = await _repository.LookupPartnerIdByKeyAsync(context.PartnerKey, ct);
-
-            if (partnerId.HasValue)
-            {
-                context.PartnerId = partnerId.Value;
-                _logger.LogDebug(
-                    "ResolvePartnerIdAsync: resolved PartnerKey={Key} → PartnerId={Id}",
-                    context.PartnerKey, partnerId.Value);
-            }
-            else
-            {
-                _logger.LogWarning(
-                    "ResolvePartnerIdAsync: partner not found for key {PartnerKey} – continuing without partner",
-                    context.PartnerKey);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "ResolvePartnerIdAsync: error looking up partner for key {PartnerKey} – continuing without partner",
-                context.PartnerKey);
-        }
-    }
-
     // ══════════════════════════════════════════════════════════════════════════════════
     // SECTION 1.3: Resolve Currency ID
     // ══════════════════════════════════════════════════════════════════════════════════
@@ -736,91 +879,6 @@ public class CartOrderPreparationService
             "ResolveCurrencyIdAsync: applying default CurrencyId={Default} (USD)",
             defaultCurrencyId);
     }
-
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.4.2: Enrich Items with LicenseCategoryId
-    // ══════════════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// SECTION 1.4.2: Populate <see cref="CartOrderItemContext.LicenseCategoryId"/> on each item.
-    ///
-    /// Purpose: The SQL procedure enriches each item row with <c>license_category_id</c> after
-    /// the initial item population.  This method does the same without hitting the database by
-    /// reading from already-loaded in-memory data:
-    /// <list type="number">
-    ///   <item>From the <paramref name="products"/> dictionary (product → license_category_id).</item>
-    ///   <item>From <paramref name="license"/> when the item's <c>LicenseCategoryName</c> matches
-    ///         the license's category name.</item>
-    /// </list>
-    ///
-    /// No database calls are made.  Items for which no match is found are left with
-    /// <c>LicenseCategoryId = null</c> and a debug log is emitted.
-    /// </summary>
-    /// <param name="items">Item list to enrich in-place.</param>
-    /// <param name="products">Product dictionary loaded in Section 1.5.</param>
-    /// <param name="license">License context loaded in Section 1.3 (may be null).</param>
-    public void EnrichItemsWithLicenseCategoryId(
-        List<CartOrderItemContext> items,
-        Dictionary<int, CartOrderProductContext> products,
-        CartOrderLicenseContext? license)
-    {
-        if (items is null || items.Count == 0)
-        {
-            _logger.LogDebug("EnrichItemsWithLicenseCategoryId: no items to enrich");
-            return;
-        }
-
-        int enriched = 0;
-        int notFound = 0;
-
-        foreach (var item in items)
-        {
-            // ── Source 1: product catalog (preferred – most specific per product) ──
-            if (products.TryGetValue(item.ProductId, out var product)
-                && product.LicenseCategoryId.HasValue)
-            {
-                item.LicenseCategoryId = product.LicenseCategoryId;
-                enriched++;
-
-                _logger.LogDebug(
-                    "EnrichItemsWithLicenseCategoryId: item LineItem={Line} ProductId={Product} " +
-                    "→ LicenseCategoryId={CategoryId} (from product)",
-                    item.LineItem, item.ProductId, item.LicenseCategoryId);
-                continue;
-            }
-
-            // ── Source 2: license context (same category name) ─────────────────────
-            if (license is not null
-                && !string.IsNullOrWhiteSpace(item.LicenseCategoryName)
-                && string.Equals(item.LicenseCategoryName, license.LicenseCategoryName,
-                    StringComparison.OrdinalIgnoreCase)
-                && license.LicenseId > 0)
-            {
-                // LicenseCategoryId is not directly stored on CartOrderLicenseContext;
-                // we encode the contract: LicenseId > 0 implies category was loaded.
-                // The actual int is unavailable here without an extra field.
-                // Leave null and let the caller supply it from LicenseEntity if needed.
-                _logger.LogDebug(
-                    "EnrichItemsWithLicenseCategoryId: item LineItem={Line} matches license category " +
-                    "{CategoryName} but LicenseCategoryId not available on context – skipping",
-                    item.LineItem, item.LicenseCategoryName);
-                notFound++;
-                continue;
-            }
-
-            // ── No source resolved ─────────────────────────────────────────────────
-            _logger.LogDebug(
-                "EnrichItemsWithLicenseCategoryId: item LineItem={Line} ProductId={Product} " +
-                "– LicenseCategoryId not resolved (product not in catalog)",
-                item.LineItem, item.ProductId);
-            notFound++;
-        }
-
-        _logger.LogInformation(
-            "EnrichItemsWithLicenseCategoryId: {Enriched} enriched, {NotFound} unresolved out of {Total} items",
-            enriched, notFound, items.Count);
-    }
-
     // ══════════════════════════════════════════════════════════════════════════════════
     // SECTION 1.3: Detect Utility Billing Models
     // ══════════════════════════════════════════════════════════════════════════════════
@@ -865,6 +923,145 @@ public class CartOrderPreparationService
                 billingModelId);
             return false;
         }
+    }
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1.3: Load License Information
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// SECTION 1.3: Load license information by keycode
+    /// 
+    /// Purpose: Given a license keycode, resolve it to license details
+    /// including seats, category, expiration date, billing model, and all profile data
+    /// needed for Sections 2.1-2.5 product determination.
+    /// 
+    /// Database Query (Section 1.5):
+    ///   SELECT * FROM license WHERE keycode = @keycode
+    ///   JOIN license_category ON license.license_category_id = license_category.license_category_id
+    ///   (Equivalent to fn_license_select_license_profile)
+    /// 
+    /// Returns: Prepared license context model with all fields, or null if keycode is empty/not found
+    /// 
+    /// CRITICAL FIELDS for downstream:
+    /// - CategoryTypeName: 'trial' or 'full' (Section 2.1 date determination)
+    /// - AutorenewCycle: Years for renewal (Section 2.2 WIFI upgrade detection)
+    /// - RetentionModelId: For Section 2.2.2 retention upgrade rules
+    /// </summary>
+    public async Task<CartOrderLicenseContext?> LoadLicenseByKeycodeAsync(
+        string? keycode,
+        CancellationToken ct = default)
+    {
+        // Early return: null/empty keycode
+        if (string.IsNullOrWhiteSpace(keycode))
+        {
+            _logger.LogDebug("LoadLicenseByKeycodeAsync called with null/empty keycode");
+            return null;
+        }
+
+        _logger.LogDebug("Loading license by keycode: {Keycode}", keycode);
+
+        try
+        {
+            // Query repository: Get full license profile (Section 1.5 fn_license_select_license_profile)
+            var licenseEntity = await _repository.GetLicenseByKeycodeAsync(keycode, ct);
+
+            if (licenseEntity is null)
+            {
+                _logger.LogWarning("License not found for keycode: {Keycode}", keycode);
+                return null;
+            }
+
+            // Load next process date for monthly billing conversions (Section 1.3.3)
+            LicenseMessageEntity? messageEntity = null;
+            if (licenseEntity.LicenseId > 0)
+            {
+                messageEntity = await _repository.GetLicenseMessageByIdAsync(licenseEntity.LicenseId, ct);
+            }
+            var licenseAttributeLicenseValue =
+            await _repository.GetLicenseAttributeLicenseValueAsync(
+                licenseEntity.LicenseId,
+                ct);
+
+            // Prepare license context from entity
+            var context = new CartOrderLicenseContext
+            {
+                LicenseId = licenseEntity.LicenseId,
+                Keycode = keycode,
+                LicenseStatus = licenseEntity.LicenseStatus,
+                LicenseCategory = licenseEntity.LicenseCategory?.LicenseCategoryName,
+                LicenseCategoryName = licenseEntity.LicenseCategory?.LicenseCategoryName,
+                LicenseSeats = licenseEntity.LicenseSeats,
+                ExpirationDate = licenseEntity.ExpirationDate,
+                CategoryTypeName = licenseEntity.CategoryTypeName,  // CRITICAL: 'trial' or 'full'
+                LicenseAttributeLicenseValue = licenseAttributeLicenseValue,
+                AutorenewCycle = licenseEntity.AutorenewCycle,  // CRITICAL: For Section 2.2 WIFI detection
+                RetentionModelId = licenseEntity.RetentionModelId,
+                RetentionTerm = licenseEntity.RetentionTerm,
+                UsagePricingModelId = licenseEntity.UsagePricingModelId,
+                StorageGb = licenseEntity.StorageGb,
+                ProductPlatformId = licenseEntity.ProductPlatformId,
+                LicenseKeycodeTypeId = licenseEntity.LicenseKeycodeTypeId,
+                LicenseDistributionMethodId = licenseEntity.LicenseDistributionMethodId,
+                ProductLineId = licenseEntity.ProductLineId,
+                NextProcessDate = messageEntity?.NextProcessDate,
+                LoadedAt = DateTime.UtcNow
+            };
+
+            _logger.LogInformation(
+                "License loaded: Keycode={Keycode}, LicenseId={LicenseId}, Category={Category}, " +
+                "Type={Type}, Autorenew={Autorenew}, RetentionModel={RetentionModel}",
+                keycode, licenseEntity.LicenseId, context.LicenseCategoryName,
+                context.CategoryTypeName, context.AutorenewCycle, context.RetentionModelId);
+
+            return context;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error loading license by keycode: {Keycode}", keycode);
+            throw;
+        }
+    }
+
+
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1.3.1: License Keycode Type Fallback Logic
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// SECTION 1.3.1: Apply fallback logic for license keycode type ID.
+    ///
+    /// SQL equivalent:
+    /// <code>
+    /// SELECT @license_keycode_type_id = CASE
+    ///   WHEN @license_keycode_type_id IS NULL THEN license_keycode_type_id
+    ///   ELSE @license_keycode_type_id
+    /// END
+    /// </code>
+    ///
+    /// Logic: If bundle provides a keycode type, use it. Otherwise, use the license's value.
+    /// This allows bundle overrides while preserving license defaults.
+    /// </summary>
+    /// <param name="bundle">Bundle context (may have LicenseKeycodeTypeId).</param>
+    /// <param name="license">License context (has LicenseKeycodeTypeId).</param>
+    /// <returns>The resolved license keycode type ID (bundle value preferred over license value).</returns>
+    public int? ApplyLicenseKeycodeTypeFallback(BundleContext? bundle, CartOrderLicenseContext? license)
+    {
+        if (bundle is null || license is null)
+            return license?.LicenseKeycodeTypeId;
+
+        // Preserve bundle's value if provided, otherwise use license's value
+        var resolved = bundle.LicenseKeycodeTypeId ?? license.LicenseKeycodeTypeId;
+
+        if (bundle.LicenseKeycodeTypeId.HasValue && bundle.LicenseKeycodeTypeId != license.LicenseKeycodeTypeId)
+            _logger.LogDebug(
+                "ApplyLicenseKeycodeTypeFallback: using bundle override {BundleValue} instead of license {LicenseValue}",
+                bundle.LicenseKeycodeTypeId, license.LicenseKeycodeTypeId);
+        else if (!bundle.LicenseKeycodeTypeId.HasValue && license.LicenseKeycodeTypeId.HasValue)
+            _logger.LogDebug(
+                "ApplyLicenseKeycodeTypeFallback: using license value {LicenseValue}",
+                license.LicenseKeycodeTypeId);
+
+        return resolved;
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════
@@ -922,170 +1119,270 @@ public class CartOrderPreparationService
         }
     }
 
+    
+    
+
+
     // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.9.2: Product Line Remapping
+    // SECTION 1.4 (JSON): Parse Item JSON Array
     // ══════════════════════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// SECTION 1.9.2: Remap legacy product line IDs to canonical values.
+    /// SECTION 1.4: Parse <c>@item_json</c> array into a list of <see cref="CartOrderItemContext"/> objects.
     ///
-    /// SQL equivalent:
-    /// <code>
-    /// IF @product_line_id IN (1, 6)
-    ///   SELECT @product_line_id = CASE
-    ///     WHEN @product_line_id = 1 THEN 100
-    ///     WHEN @product_line_id = 6 THEN 200
-    ///   END
-    /// </code>
+    /// Purpose: Extract the collection of new line-items supplied by the caller as a JSON array.
+    /// This is the C# equivalent of the SQL OPENJSON(@item_json) WITH (…) pattern inside
+    /// <c>usp_cart_insert_cart_order_item</c>.  No database calls are made here.
     ///
-    /// Non-fatal: returns the input if not in the remap set.
+    /// Populated fields per item:
+    /// <list type="bullet">
+    ///   <item><c>product_id</c></item>
+    ///   <item><c>license_category_name</c></item>
+    ///   <item><c>quantity</c></item>
+    ///   <item><c>license_seats</c></item>
+    ///   <item><c>storage_gb</c></item>
+    ///   <item><c>years</c></item>
+    ///   <item><c>item_hierarchy_id</c></item>
+    ///   <item><c>cart_item_bundle_id</c></item>
+    ///   <item><c>license_attribute_license_value</c></item>
+    ///   <item><c>usage_pricing_model_id</c></item>
+    ///   <item><c>retention_model_id</c></item>
+    ///   <item><c>retention_term</c></item>
+    ///   <item><c>product_platform_id</c></item>
+    ///   <item><c>start_date</c></item>
+    ///   <item><c>expiration_date</c></item>
+    ///   <item><c>keycode</c></item>
+    /// </list>
+    ///
+    /// No filtering, validation, or repository lookups are applied in this method.
     /// </summary>
-    /// <param name="productLineId">The product line ID to remap.</param>
-    /// <returns>The remapped product line ID (1→100, 6→200, others unchanged).</returns>
-    public int? RemapProductLineId(int? productLineId)
+    /// <param name="itemJson">
+    ///   Raw JSON array string from the <c>@item_json</c> parameter.
+    ///   Example: <c>[{"product_id":42,"quantity":1,"years":1}]</c>
+    /// </param>
+    /// <param name="ct">Cancellation token (reserved for future async use).</param>
+    /// <returns>
+    ///   List of populated <see cref="CartOrderItemContext"/> objects (never null; empty on failure).
+    /// </returns>
+    public Task<List<CartOrderItemContext>> ParseItemJsonAsync(
+        string? itemJson,
+        int? resolvedLicenseKeycodeTypeId,
+        CancellationToken ct = default)
     {
-        if (!productLineId.HasValue || productLineId.Value <= 0)
-            return productLineId;
+        var result = new List<CartOrderItemContext>();
 
-        var remapped = productLineId.Value switch
+        // Early return: null/empty JSON
+        if (string.IsNullOrWhiteSpace(itemJson))
         {
-            1 => 100,
-            6 => 200,
-            _ => productLineId.Value
-        };
+            _logger.LogDebug("ParseItemJsonAsync: itemJson is null or empty – returning empty list");
+            return Task.FromResult(result);
+        }
 
-        if (remapped != productLineId.Value)
-            _logger.LogDebug(
-                "RemapProductLineId: product line {OldId} → {NewId}",
-                productLineId, remapped);
+        _logger.LogDebug("ParseItemJsonAsync: parsing item JSON array ({Length} chars)", itemJson.Length);
 
-        return remapped;
+        try
+        {
+            var rawItems = JsonSerializer.Deserialize<List<ItemJsonPayload>>(
+                itemJson,
+                ItemJsonPayload.SerializerOptions);
+
+            if (rawItems is null || rawItems.Count == 0)
+            {
+                _logger.LogWarning("ParseItemJsonAsync: JSON produced no items");
+                return Task.FromResult(result);
+            }
+
+            for (int i = 0; i < rawItems.Count; i++)
+            {
+                var raw = rawItems[i];
+
+                var context = new CartOrderItemContext
+                {
+                    // CartOrderItemId / CartOrderId are 0 for NEW items (not yet inserted)
+                    CartOrderItemId  = 0,
+                    CartOrderId      = 0,
+                    LineItem         = i + 1,
+
+                    ProductId            = raw.ProductId,
+                    LicenseCategoryName  = NullIfEmpty(raw.LicenseCategoryName),
+                    Quantity             = raw.Quantity,
+                    LicenseSeats         = raw.LicenseSeats,
+                    TotalLicenseSeats    = raw.LicenseSeats,  // SQL: total_license_seats = license_seats (initialized from input)
+                    StorageGb            = raw.StorageGb,
+                    Years                = raw.Years,
+                    StartDate            = raw.StartDate,
+                    ExpirationDate       = raw.ExpirationDate,
+                    VendorExpirationDate = raw.VendorExpirationDate,
+                    Keycode              = NullIfEmpty(raw.Keycode),
+                    VendorOrderItemCode  = NullIfEmpty(raw.VendorOrderItemCode),
+                    Discount             = raw.Discount,
+                    CartDiscountMethodId = raw.CartDiscountMethodId,
+                    OpportunityLineItemId = NullIfEmpty(raw.OpportunityLineItemId),
+                    UnitPrice            = raw.UnitPrice,
+                    ItemTotal            = raw.ItemTotal,
+                    UsagePrice           = raw.UsagePrice,
+                    VaultId              = raw.VaultId,
+                    Vault                = raw.Vault is null ? null : JsonSerializer.Serialize(raw.Vault),
+                    SapMaterialNumber    = raw.SapMaterialNumber,
+
+                    ItemHierarchyId              = raw.ItemHierarchyId,
+                    CartItemBundleId             = raw.CartItemBundleId,
+                    LicenseAttributeLicenseValue = raw.LicenseAttributeLicenseValue,
+                    UsagePricingModelId          = raw.UsagePricingModelId,
+                    RetentionModelId             = raw.RetentionModelId,
+                    RetentionTerm                = raw.RetentionTerm,
+                    ProductPlatformId            = raw.ProductPlatformId,
+                    LicenseKeycodeTypeId         = resolvedLicenseKeycodeTypeId,
+                    AmendedContract              = NullIfEmpty(raw.AmendedContract),  // SQL: CASE WHEN amended_contract = '' THEN NULL ELSE amended_contract END
+
+                    LoadedAt = DateTime.UtcNow
+                };
+
+                result.Add(context);
+
+                _logger.LogDebug(
+                    "ParseItemJsonAsync: item[{Index}] – ProductId={ProductId}, " +
+                    "Category={Category}, Qty={Qty}, Seats={Seats}, Hierarchy={Hierarchy}",
+                    i, context.ProductId, context.LicenseCategoryName ?? "(none)",
+                    context.Quantity, context.LicenseSeats, context.ItemHierarchyId);
+            }
+
+            _logger.LogInformation(
+                "ParseItemJsonAsync: parsed {Parsed} items from {Total} raw entries",
+                result.Count, rawItems.Count);
+
+            return Task.FromResult(result);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogError(ex,
+                "ParseItemJsonAsync: malformed JSON – returning empty list. JSON snippet: {Snippet}",
+                itemJson.Length > 200 ? itemJson[..200] : itemJson);
+
+            return Task.FromResult(result);
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.10: Down-Rev Category Name Normalization
+    // Private helpers
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>Returns <see langword="null"/> when <paramref name="value"/> is null or whitespace.</summary>
+    private static string? NullIfEmpty(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
+
+    
+   
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1.4.1.1: OTSF Retention Model Validation
     // ══════════════════════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// SECTION 1.10: Normalize down-rev category names to canonical names.
+    /// SECTION 1.4.1.1: Validate that no OTSF item carries <c>retention_model_id = 7</c>.
+    ///
+    /// SQL equivalent:
+    /// <code>
+    /// IF EXISTS (SELECT * FROM @item_table i
+    ///            WHERE i.license_category_name = 'OTSF' AND i.retention_model_id = 7)
+    ///   SELECT @response_code = -1, @message = '...' RETURN
+    /// </code>
+    ///
+    /// When the condition is violated the method throws <see cref="InvalidOperationException"/>
+    /// so that the calling service layer can map it to the appropriate HTTP 422 / error response.
+    /// The check is category-name based to mirror the SQL exactly; 'CBSB' is also
+    /// treated as OTSF per the 2022-01-06 remark in the procedure header.
+    /// </summary>
+    /// <param name="items">Items produced by <see cref="ParseItemJsonAsync"/>.</param>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when an OTSF (or CBSB) item requests <c>retention_model_id = 7</c>.
+    /// </exception>
+    public void ValidateOtsfRetentionModel(List<CartOrderItemContext> items)
+    {
+        if (items is null || items.Count == 0)
+        {
+            _logger.LogDebug("ValidateOtsfRetentionModel: no items to validate");
+            return;
+        }
+
+        // SQL: license_category_name = 'OTSF' AND retention_model_id = 7
+        // 'CBSB' is also covered per 2022-01-06 history note.
+        var violatingItem = items.FirstOrDefault(i =>
+            i.RetentionModelId == 7 &&
+            (string.Equals(i.LicenseCategoryName, "OTSF", StringComparison.OrdinalIgnoreCase) ));
+
+        if (violatingItem is not null)
+        {
+            _logger.LogWarning(
+                "ValidateOtsfRetentionModel: OTSF/CBSB item LineItem={Line} " +
+                "has retention_model_id=7 which is not permitted for partner cart",
+                violatingItem.LineItem);
+
+            // Mirrors: SELECT @response_code = -1, @message = '...' RETURN
+            throw new InvalidOperationException(
+                "No product unit price found in partner_pricing_tier");
+        }
+
+        _logger.LogDebug("ValidateOtsfRetentionModel: all {Count} items passed", items.Count);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1.4.2: Enrich Items with LicenseCategoryId
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// SECTION 1.4.2: Populate <see cref="CartOrderItemContext.LicenseCategoryId"/> from
+    /// <c>license_category_name</c>.
     ///
     /// SQL equivalent:
     /// <code>
     /// UPDATE @item_table
-    /// SET license_category_name = CASE
-    ///   WHEN license_category_name = 'AD' THEN 'ADP'
-    ///   WHEN license_category_name IN ('WAV', 'SS') THEN 'WSAV'
-    ///   WHEN license_category_name IN ('WISE', 'WSAE') THEN 'WSAI'
-    ///   WHEN license_category_name = 'WISC' THEN 'WSAC'
-    /// END
-    /// WHERE license_category_name IN ('SS', 'WAV', 'WISC', 'WISE', 'WSAE', 'AD')
+    /// SET license_category_id = license_category.license_category_id
+    /// FROM license_category
+    /// WHERE license_category.license_category_name = item.license_category_name
     /// </code>
     ///
-    /// Normalizes both item categories and license categories for downstream comparisons.
-    /// No-op if category is already canonical.
+    /// This method performs only name-to-id assignment using the license_category table lookup.
     /// </summary>
-    /// <param name="items">Items to normalize in-place.</param>
-    /// <param name="license">License context to normalize in-place (may be null).</param>
-    public void NormalizeDownRevCategoryNames(
+    /// <param name="items">Item list to enrich in-place.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task EnrichItemsWithLicenseCategoryId(
         List<CartOrderItemContext> items,
-        CartOrderLicenseContext? license)
+        CancellationToken ct = default)
     {
         if (items is null || items.Count == 0)
         {
-            _logger.LogDebug("NormalizeDownRevCategoryNames: no items to normalize");
+            _logger.LogDebug("EnrichItemsWithLicenseCategoryId: no items to enrich");
             return;
         }
 
-        string NormalizeCategory(string? categoryName)
-        {
-            if (string.IsNullOrWhiteSpace(categoryName))
-                return categoryName ?? string.Empty;
+        var licenseCategoryLookup = await _repository.GetLicenseCategoryIdLookupByNameAsync(ct);
 
-            return categoryName switch
-            {
-                "AD" => "ADP",
-                "WAV" or "SS" => "WSAV",
-                "WISE" or "WSAE" => "WSAI",
-                "WISC" => "WSAC",
-                _ => categoryName
-            };
-        }
-
-        int itemsUpdated = 0;
+        int enriched = 0;
 
         foreach (var item in items)
         {
-            var normalized = NormalizeCategory(item.LicenseCategoryName);
-            if (normalized != item.LicenseCategoryName)
+            if (!string.IsNullOrWhiteSpace(item.LicenseCategoryName)
+                && licenseCategoryLookup.TryGetValue(item.LicenseCategoryName, out var licenseCategoryId))
             {
-                _logger.LogDebug(
-                    "NormalizeDownRevCategoryNames: LineItem={Line} {OldName} → {NewName}",
-                    item.LineItem, item.LicenseCategoryName, normalized);
-                item.LicenseCategoryName = normalized;
-                itemsUpdated++;
+                item.LicenseCategoryId = licenseCategoryId;
+                enriched++;
             }
-        }
-
-        if (license is not null)
-        {
-            var normalized = NormalizeCategory(license.LicenseCategoryName);
-            if (normalized != license.LicenseCategoryName)
+            else
             {
                 _logger.LogDebug(
-                    "NormalizeDownRevCategoryNames: license category {OldName} → {NewName}",
-                    license.LicenseCategoryName, normalized);
-                license.LicenseCategoryName = normalized;
+                    "EnrichItemsWithLicenseCategoryId: item LineItem={Line} category {CategoryName} not found in license_category lookup",
+                    item.LineItem, item.LicenseCategoryName ?? "(null)");
             }
         }
 
         _logger.LogInformation(
-            "NormalizeDownRevCategoryNames: normalized {ItemsUpdated} items",
-            itemsUpdated);
+            "EnrichItemsWithLicenseCategoryId: {Enriched} enriched out of {Total} items",
+            enriched, items.Count);
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.3.1: License Keycode Type Fallback Logic
-    // ══════════════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// SECTION 1.3.1: Apply fallback logic for license keycode type ID.
-    ///
-    /// SQL equivalent:
-    /// <code>
-    /// SELECT @license_keycode_type_id = CASE
-    ///   WHEN @license_keycode_type_id IS NULL THEN license_keycode_type_id
-    ///   ELSE @license_keycode_type_id
-    /// END
-    /// </code>
-    ///
-    /// Logic: If bundle provides a keycode type, use it. Otherwise, use the license's value.
-    /// This allows bundle overrides while preserving license defaults.
-    /// </summary>
-    /// <param name="bundle">Bundle context (may have LicenseKeycodeTypeId).</param>
-    /// <param name="license">License context (has LicenseKeycodeTypeId).</param>
-    /// <returns>The resolved license keycode type ID (bundle value preferred over license value).</returns>
-    public int? ApplyLicenseKeycodeTypeFallback(BundleContext? bundle, CartOrderLicenseContext? license)
-    {
-        if (bundle is null || license is null)
-            return license?.LicenseKeycodeTypeId;
-
-        // Preserve bundle's value if provided, otherwise use license's value
-        var resolved = bundle.LicenseKeycodeTypeId ?? license.LicenseKeycodeTypeId;
-
-        if (bundle.LicenseKeycodeTypeId.HasValue && bundle.LicenseKeycodeTypeId != license.LicenseKeycodeTypeId)
-            _logger.LogDebug(
-                "ApplyLicenseKeycodeTypeFallback: using bundle override {BundleValue} instead of license {LicenseValue}",
-                bundle.LicenseKeycodeTypeId, license.LicenseKeycodeTypeId);
-        else if (!bundle.LicenseKeycodeTypeId.HasValue && license.LicenseKeycodeTypeId.HasValue)
-            _logger.LogDebug(
-                "ApplyLicenseKeycodeTypeFallback: using license value {LicenseValue}",
-                license.LicenseKeycodeTypeId);
-
-        return resolved;
-    }
 
     // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.4.2: Business Billing Model Fallback
+    // SECTION <<1.4.2>>: Business Billing Model Fallback
     // ══════════════════════════════════════════════════════════════════════════════════
 
     /// <summary>
@@ -1150,303 +1447,8 @@ public class CartOrderPreparationService
 
         return billingModelId;
     }
-
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.3: Load License Information
-    // ══════════════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// SECTION 1.3: Load license information by keycode
-    /// 
-    /// Purpose: Given a license keycode, resolve it to license details
-    /// including seats, category, expiration date, billing model, and all profile data
-    /// needed for Sections 2.1-2.5 product determination.
-    /// 
-    /// Database Query (Section 1.5):
-    ///   SELECT * FROM license WHERE keycode = @keycode
-    ///   JOIN license_category ON license.license_category_id = license_category.license_category_id
-    ///   (Equivalent to fn_license_select_license_profile)
-    /// 
-    /// Returns: Prepared license context model with all fields, or null if keycode is empty/not found
-    /// 
-    /// CRITICAL FIELDS for downstream:
-    /// - CategoryTypeName: 'trial' or 'full' (Section 2.1 date determination)
-    /// - AutorenewCycle: Years for renewal (Section 2.2 WIFI upgrade detection)
-    /// - RetentionModelId: For Section 2.2.2 retention upgrade rules
-    /// </summary>
-    public async Task<CartOrderLicenseContext?> LoadLicenseByKeycodeAsync(
-        string? keycode,
-        CancellationToken ct = default)
-    {
-        // Early return: null/empty keycode
-        if (string.IsNullOrWhiteSpace(keycode))
-        {
-            _logger.LogDebug("LoadLicenseByKeycodeAsync called with null/empty keycode");
-            return null;
-        }
-
-        _logger.LogDebug("Loading license by keycode: {Keycode}", keycode);
-
-        try
-        {
-            // Query repository: Get full license profile (Section 1.5 fn_license_select_license_profile)
-            var licenseEntity = await _repository.GetLicenseByKeycodeAsync(keycode, ct);
-
-            if (licenseEntity is null)
-            {
-                _logger.LogWarning("License not found for keycode: {Keycode}", keycode);
-                return null;
-            }
-
-            // Load next process date for monthly billing conversions (Section 1.3.3)
-            LicenseMessageEntity? messageEntity = null;
-            if (licenseEntity.LicenseId > 0)
-            {
-                messageEntity = await _repository.GetLicenseMessageByIdAsync(licenseEntity.LicenseId, ct);
-            }
-
-            // Prepare license context from entity
-            var context = new CartOrderLicenseContext
-            {
-                LicenseId = licenseEntity.LicenseId,
-                Keycode = keycode,
-                LicenseStatus = licenseEntity.LicenseStatus,
-                LicenseCategory = licenseEntity.LicenseCategory?.LicenseCategoryName,
-                LicenseCategoryName = licenseEntity.LicenseCategory?.LicenseCategoryName,
-                LicenseSeats = licenseEntity.LicenseSeats,
-                ExpirationDate = licenseEntity.ExpirationDate,
-                CategoryTypeName = licenseEntity.CategoryTypeName,  // CRITICAL: 'trial' or 'full'
-                LicenseAttributeLicenseValue = null,  // Will be populated from bundle JSON
-                AutorenewCycle = licenseEntity.AutorenewCycle,  // CRITICAL: For Section 2.2 WIFI detection
-                RetentionModelId = licenseEntity.RetentionModelId,
-                RetentionTerm = licenseEntity.RetentionTerm,
-                UsagePricingModelId = licenseEntity.UsagePricingModelId,
-                StorageGb = licenseEntity.StorageGb,
-                ProductPlatformId = licenseEntity.ProductPlatformId,
-                LicenseKeycodeTypeId = licenseEntity.LicenseKeycodeTypeId,
-                LicenseDistributionMethodId = licenseEntity.LicenseDistributionMethodId,
-                LoadedAt = DateTime.UtcNow
-            };
-
-            _logger.LogInformation(
-                "License loaded: Keycode={Keycode}, LicenseId={LicenseId}, Category={Category}, " +
-                "Type={Type}, Autorenew={Autorenew}, RetentionModel={RetentionModel}",
-                keycode, licenseEntity.LicenseId, context.LicenseCategoryName,
-                context.CategoryTypeName, context.AutorenewCycle, context.RetentionModelId);
-
-            return context;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error loading license by keycode: {Keycode}", keycode);
-            throw;
-        }
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.4: Load Existing Items
-    // ══════════════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// SECTION 1.4: Extract and organize existing cart items
-    /// 
-    /// Purpose: Load line items from an existing cart, preparing them for
-    /// updates or display. Includes validation that items exist and are well-formed.
-    /// 
-    /// Database Query (via cart loaded in Section 1.1):
-    ///   SELECT * FROM cart_order_item WHERE cart_order_id = @order_id
-    ///   SELECT * FROM cart_order_item_license WHERE cart_order_item_id = @item_id
-    /// 
-    /// Returns: Organized collection of prepared item contexts
-    /// </summary>
-    public async Task<List<CartOrderItemContext>> LoadExistingItemsAsync(
-        Models.Responses.CartOrderResponse? cart,
-        CancellationToken ct = default)
-    {
-        var items = new List<CartOrderItemContext>();
-
-        // Early return: null/empty cart
-        if (cart?.Items is null || cart.Items.Count == 0)
-        {
-            _logger.LogDebug("No items to load (cart is null or empty)");
-            return items;
-        }
-
-        _logger.LogDebug("Loading {ItemCount} existing items from cart", cart.Items.Count);
-
-        // Iterate through cart items and prepare context for each
-        foreach (var item in cart.Items)
-        {
-            var context = new CartOrderItemContext
-            {
-                CartOrderItemId  = item.CartOrderItemId,
-                CartOrderId      = item.CartOrderId,
-                LineItem         = item.LineItem,
-                ProductId        = item.ProductId,
-                LicenseCategoryName              = item.LicenseCategoryName,
-                Quantity                         = item.Quantity,
-                LicenseSeats                     = item.Seats,
-                StorageGb                        = item.StorageGb,
-                Years                            = item.Years,
-                StartDate                        = item.StartDate,
-                ExpirationDate                   = item.ExpirationDate,
-                // Populate billing model directly from the response row so that
-                // Section 1.11 attribute-from-primary fallback and Section 2.1 billing
-                // comparisons have the correct per-item value without extra DB calls.
-                LicenseAttributeId              = item.LicenseAttributeId,
-                LicenseAttributeLicenseValue     = item.LicenseAttributeLicenseValue,
-                Keycode                          = item.Keycode,
-                ItemHierarchyId                  = item.ItemHierarchyId,
-                CartItemBundleId                 = item.CartItemBundleId,
-                RetentionModelId                 = item.RetentionModelId  is { } rm  ? (byte)rm  : null,
-                RetentionTerm                    = item.RetentionTerm     is { } rt  ? (byte)rt  : null,
-                UsagePricingModelId              = item.UsagePricingModelId is { } up ? (byte)up : null,
-                ProductPlatformId                = item.ProductPlatformId  is { } pp ? (byte)pp : null,
-                LoadedAt                         = DateTime.UtcNow
-            };
-
-            items.Add(context);
-
-            _logger.LogDebug(
-                "Item loaded: LineItem={Line}, Product={ProductId}, Quantity={Qty}, Years={Years}, " +
-                "Hierarchy={Hierarchy}, BillingModel={BillingModel}",
-                context.LineItem, context.ProductId, context.Quantity, context.Years,
-                context.ItemHierarchyId, context.LicenseAttributeLicenseValue);
-        }
-
-        _logger.LogInformation("Loaded {ItemCount} items from existing cart", items.Count);
-
-        return items;
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.2.1: Load Locale Mapping
-    // ══════════════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// SECTION 1.2.1: Map locale to language and location codes
-    /// 
-    /// Purpose: Translate @locale string (e.g., 'en_US', 'de_DE', 'ja_JP') 
-    /// to language_code and location_code pair needed for regional lookups.
-    /// 
-    /// Database Query:
-    ///   SELECT language_code, location_code FROM locale_language_location 
-    ///   WHERE locale = @locale
-    ///   OR CALL fn_locale_to_lang_loc(@locale, @language_code OUT, @location_code OUT)
-    /// 
-    /// Returns: Tuple (languageCode, locationCode), or defaults ("en", "US") if not found
-    /// </summary>
-    public async Task<(string LanguageCode, string LocationCode)> LoadLocaleCodesByLocaleAsync(
-        string? locale,
-        CancellationToken ct = default)
-    {
-        // Default: English, United States
-        const string defaultLanguage = "en";
-        const string defaultLocation = "US";
-
-        // Early return: null/empty locale
-        if (string.IsNullOrWhiteSpace(locale))
-        {
-            _logger.LogDebug("Locale is null or empty, using defaults: {Language}/{Location}", 
-                defaultLanguage, defaultLocation);
-            return (defaultLanguage, defaultLocation);
-        }
-
-        _logger.LogDebug("Loading locale codes for locale: {Locale}", locale);
-
-        try
-        {
-            // Query repository for locale mapping
-            var localeEntity = await _repository.GetLocaleByCodeAsync(locale, ct);
-
-            if (localeEntity is null)
-            {
-                _logger.LogWarning("Locale mapping not found: {Locale}, using defaults", locale);
-                return (defaultLanguage, defaultLocation);
-            }
-
-            var languageCode = localeEntity.LanguageCode ?? defaultLanguage;
-            var locationCode = localeEntity.LocationCode ?? defaultLocation;
-
-            _logger.LogDebug(
-                "Locale codes loaded: Locale={Locale}, Language={Language}, Location={Location}",
-                locale, languageCode, locationCode);
-
-            return (languageCode, locationCode);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error loading locale codes for {Locale}, using defaults", locale);
-            return (defaultLanguage, defaultLocation);
-        }
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.9 & 1.9.1: Load Product Line by License Category
-    // ══════════════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// SECTION 1.9 & 1.9.1: Get product line for license category and locale
-    /// 
-    /// Purpose: Map license_category_id + locale to product_line_id for upgrade determination.
-    /// Used to identify which products are available for upgrades in a specific region/category.
-    /// 
-    /// Database Query:
-    ///   SELECT product_line_id FROM license_category_product_line
-    ///   WHERE license_category_id = @licenseCategoryId
-    ///   AND language_code = @languageCode
-    ///   AND location_code = @locationCode
-    /// 
-    /// Returns: product_line_id if found, null if not found (fallback to license.product_line_id)
-    /// </summary>
-    public async Task<int?> LoadProductLineByLicenseCategoryAsync(
-        int? licenseCategoryId,
-        string? languageCode,
-        string? locationCode,
-        CancellationToken ct = default)
-    {
-        // Early return: null category
-        if (!licenseCategoryId.HasValue || licenseCategoryId.Value <= 0)
-        {
-            _logger.LogDebug("LicenseCategoryId is null or invalid, skipping product line lookup");
-            return null;
-        }
-
-        _logger.LogDebug(
-            "Loading product line for category: LicenseCategoryId={CategoryId}, Language={Language}, Location={Location}",
-            licenseCategoryId, languageCode, locationCode);
-
-        try
-        {
-            // Query repository for product line mapping
-            var productLineEntity = await _repository.GetProductLineByLicenseCategoryAndLocaleAsync(
-                licenseCategoryId.Value,
-                languageCode,
-                locationCode,
-                ct);
-
-            if (productLineEntity is null)
-            {
-                _logger.LogDebug(
-                    "Product line not found for category {CategoryId}, using fallback",
-                    licenseCategoryId);
-                return null;
-            }
-
-            _logger.LogDebug(
-                "Product line loaded: Category={CategoryId}, ProductLineId={ProductLineId}",
-                licenseCategoryId, productLineEntity.ProductLineId);
-
-            return productLineEntity.ProductLineId;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error loading product line for category {CategoryId}", 
-                licenseCategoryId);
-            throw;
-        }
-    }
-
+    
+    
     // ══════════════════════════════════════════════════════════════════════════════════
     // SECTION 1.5: Prepare Product Information
     // ══════════════════════════════════════════════════════════════════════════════════
@@ -1556,58 +1558,6 @@ public class CartOrderPreparationService
         return await PrepareProductsAsync(productIds, ct);
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.4.1.1: OTSF Retention Model Validation
-    // ══════════════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// SECTION 1.4.1.1: Validate that no OTSF item carries <c>retention_model_id = 7</c>.
-    ///
-    /// SQL equivalent:
-    /// <code>
-    /// IF EXISTS (SELECT * FROM @item_table i
-    ///            WHERE i.license_category_name = 'OTSF' AND i.retention_model_id = 7)
-    ///   SELECT @response_code = -1, @message = '...' RETURN
-    /// </code>
-    ///
-    /// When the condition is violated the method throws <see cref="InvalidOperationException"/>
-    /// so that the calling service layer can map it to the appropriate HTTP 422 / error response.
-    /// The check is category-name based to mirror the SQL exactly; 'CBSB' is also
-    /// treated as OTSF per the 2022-01-06 remark in the procedure header.
-    /// </summary>
-    /// <param name="items">Items produced by <see cref="ParseItemJsonAsync"/>.</param>
-    /// <exception cref="InvalidOperationException">
-    /// Thrown when an OTSF (or CBSB) item requests <c>retention_model_id = 7</c>.
-    /// </exception>
-    public void ValidateOtsfRetentionModel(List<CartOrderItemContext> items)
-    {
-        if (items is null || items.Count == 0)
-        {
-            _logger.LogDebug("ValidateOtsfRetentionModel: no items to validate");
-            return;
-        }
-
-        // SQL: license_category_name = 'OTSF' AND retention_model_id = 7
-        // 'CBSB' is also covered per 2022-01-06 history note.
-        var violatingItem = items.FirstOrDefault(i =>
-            i.RetentionModelId == 7 &&
-            (string.Equals(i.LicenseCategoryName, "OTSF", StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(i.LicenseCategoryName, "CBSB", StringComparison.OrdinalIgnoreCase)));
-
-        if (violatingItem is not null)
-        {
-            _logger.LogWarning(
-                "ValidateOtsfRetentionModel: OTSF/CBSB item LineItem={Line} " +
-                "has retention_model_id=7 which is not permitted for partner cart",
-                violatingItem.LineItem);
-
-            // Mirrors: SELECT @response_code = -1, @message = '...' RETURN
-            throw new InvalidOperationException(
-                "No product unit price found in partner_pricing_tier");
-        }
-
-        _logger.LogDebug("ValidateOtsfRetentionModel: all {Count} items passed", items.Count);
-    }
 
     // ══════════════════════════════════════════════════════════════════════════════════
     // SECTION 1.5.1: SFDC Unit Override
@@ -1667,21 +1617,28 @@ public class CartOrderPreparationService
         foreach (var item in items)
         {
             // SQL: WHERE i.unit_price IS NOT NULL
-            // (UnitPrice is not on CartOrderItemContext for new items; the field comes from
-            //  @item_json which carries unit_price.  We skip items without an override price.)
-            // In the current model we don't carry UnitPrice on CartOrderItemContext for new items
-            // so we emit the record for every item with a license seat delta – callers decide
-            // whether to apply pricing.
+            if (!item.UnitPrice.HasValue)
+                continue;
 
-            // SQL: i.license_seats - l.license_seats
-            // LEFT JOIN means l.license_seats may be null → delta = item seats
+            // SQL LEFT JOIN: join license row only when category matches; otherwise treat as no row.
+            var joinedLicenseSeats =
+                license is not null &&
+                string.Equals(item.LicenseCategoryName, license.LicenseCategoryName, StringComparison.OrdinalIgnoreCase)
+                    ? (license.LicenseSeats ?? 0)
+                    : 0;
+
+            // SQL: i.license_seats - l.license_seats (with LEFT JOIN fallback)
             int licenseSeatsDelta = item.LicenseSeats.HasValue
-                ? item.LicenseSeats.Value -
-                  (license?.LicenseSeats ?? 0)
+                ? item.LicenseSeats.Value - joinedLicenseSeats
                 : 0;
 
             var entry = new SfdcUnitOverride
             {
+                CartOrderId          = item.CartOrderId,
+                ItemId               = item.CartOrderItemId,
+                UnitPrice            = item.UnitPrice,
+                UsagePrice           = item.UsagePrice,
+                ItemTotal            = item.ItemTotal,
                 LineItem             = item.LineItem,
                 LicenseCategoryName  = item.LicenseCategoryName,
                 DeltaLicenseSeats    = licenseSeatsDelta,
@@ -1789,6 +1746,44 @@ public class CartOrderPreparationService
         _logger.LogInformation(
             "CalculateUpgradeLicenseSeats: updated {Count} of {Total} items",
             updated, items.Count);
+    }
+    // ══════════════════════════════════════════════════════════════════════════════════
+    //Return Prepared Model
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Assemble complete preparation result
+    /// 
+    /// Purpose: Combine all loaded data (cart, context, license, items, products)
+    /// into a single prepared model that downstream sections can work with.
+    /// 
+    /// Returns: CartOrderPreparedModel containing all loaded and organized data
+    /// </summary>
+    public CartOrderPreparedModel AssemblePreparedModel(
+        CartOrderResponse? cart,
+        CartOrderUserContext context,
+        CartOrderLicenseContext? license,
+        List<CartOrderItemContext> items,
+        Dictionary<int, CartOrderProductContext> products)
+    {
+        _logger.LogDebug("Assembling prepared model: Cart={HasCart}, Items={ItemCount}, Products={ProductCount}",
+            cart?.VendorOrderCode ?? "NEW", items.Count, products.Count);
+
+        var model = new CartOrderPreparedModel
+        {
+            Cart = cart,
+            UserContext = context,
+            License = license,
+            Items = items,
+            Products = products,
+            PreparedAt = DateTime.UtcNow
+        };
+
+        _logger.LogInformation(
+            "Prepared model assembled: VendorCode={Code}, Items={Items}, Products={Products}",
+            cart?.VendorOrderCode ?? "NEW", items.Count, products.Count);
+
+        return model;
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════
@@ -1949,362 +1944,145 @@ public class CartOrderPreparationService
             "ApplyMonthlyToAnnualConversion: updated {Primary} primary, {Secondary} secondary items",
             primaryUpdated, secondaryUpdated);
     }
-
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.11: Item Enrichment (Billing Model, Usage/Retention/Platform Defaults)
+     // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1.8: Load Existing Items
     // ══════════════════════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// SECTION 1.11.1: Apply billing model fallback from primary item to secondary items.
-    ///
-    /// SQL equivalent:
-    /// <code>
-    /// UPDATE secondary_items
-    /// SET license_attribute_license_value = primary_item.license_attribute_license_value
-    /// WHERE secondary_items.license_attribute_license_value IS NULL
-    ///   AND secondary_items.item_hierarchy_id = 2
-    /// </code>
-    ///
-    /// Logic: Secondary items (ItemHierarchyId=2) inherit the billing model from their
-    /// linked primary item (via CartItemBundleId).  No-op if billing model is already set.
+    /// SECTION 1.8: Extract and organize existing cart items
+    /// 
+    /// Purpose: Load line items from an existing cart, preparing them for
+    /// updates or display. Includes validation that items exist and are well-formed.
+    /// 
+    /// Input source: existing cart aggregate already loaded earlier in the pipeline.
+    /// Returns: Organized collection of prepared item contexts.
     /// </summary>
-    /// <param name="items">Items to enrich in-place.</param>
-    /// <param name="ct">Cancellation token.</param>
-    public void EnrichBillingModelFallback(List<CartOrderItemContext> items, CancellationToken ct = default)
+    public async Task<List<CartOrderItemContext>> LoadExistingItemsAsync(
+        CartOrderResponse? cart,
+        CancellationToken ct = default)
     {
-        if (items is null || items.Count == 0)
+        var items = new List<CartOrderItemContext>();
+
+        // Early return: null/empty cart
+        if (cart?.Items is null || cart.Items.Count == 0)
         {
-            _logger.LogDebug("EnrichBillingModelFallback: no items to enrich");
-            return;
+            _logger.LogDebug("No items to load (cart is null or empty)");
+            return items;
         }
 
-        // Build a map: cart_item_bundle_id → primary_item.license_attribute_license_value
-        var primaryBillingByBundle = items
-            .Where(i => i.ItemHierarchyId == 1 && i.CartItemBundleId.HasValue && i.LicenseAttributeLicenseValue.HasValue)
-            .GroupBy(i => i.CartItemBundleId!.Value)
-            .ToDictionary(g => g.Key, g => g.First().LicenseAttributeLicenseValue!.Value);
+        _logger.LogDebug("Loading {ItemCount} existing items from cart", cart.Items.Count);
 
-        int updated = 0;
-
-        foreach (var item in items)
+        // Iterate through cart items and prepare context for each
+        foreach (var item in cart.Items)
         {
-            // Only apply to secondary items (ItemHierarchyId=2) that lack a billing model
-            if (item.ItemHierarchyId != 2 || item.LicenseAttributeLicenseValue.HasValue)
-                continue;
-
-            if (!item.CartItemBundleId.HasValue ||
-                !primaryBillingByBundle.TryGetValue(item.CartItemBundleId.Value, out var primaryBilling))
+            var context = new CartOrderItemContext
             {
-                _logger.LogDebug(
-                    "EnrichBillingModelFallback: LineItem={Line} secondary item has no linked primary billing model",
-                    item.LineItem);
-                continue;
-            }
+                CartOrderItemId  = item.CartOrderItemId,
+                CartOrderId      = item.CartOrderId,
+                LineItem         = item.LineItem,
+                ProductId        = item.ProductId,
+                LicenseCategoryName              = item.LicenseCategoryName,
+                Quantity                         = item.Quantity,
+                LicenseSeats                     = item.Seats,
+                StorageGb                        = item.StorageGb,
+                Years                            = item.Years,
+                StartDate                        = item.StartDate,
+                ExpirationDate                   = item.ExpirationDate,
+                // Populate billing model directly from the response row so that
+                // Section 1.11 attribute-from-primary fallback and Section 2.1 billing
+                // comparisons have the correct per-item value without extra DB calls.
+                LicenseAttributeId              = item.LicenseAttributeId,
+                LicenseAttributeLicenseValue     = item.LicenseAttributeLicenseValue,
+                Keycode                          = item.Keycode,
+                ItemHierarchyId                  = item.ItemHierarchyId,
+                CartItemBundleId                 = item.CartItemBundleId,
+                RetentionModelId                 = item.RetentionModelId  is { } rm  ? (byte)rm  : null,
+                RetentionTerm                    = item.RetentionTerm     is { } rt  ? (byte)rt  : null,
+                UsagePricingModelId              = item.UsagePricingModelId is { } up ? (byte)up : null,
+                ProductPlatformId                = item.ProductPlatformId  is { } pp ? (byte)pp : null,
+                LoadedAt                         = DateTime.UtcNow
+            };
 
-            item.LicenseAttributeLicenseValue = primaryBilling;
-            updated++;
+            items.Add(context);
 
             _logger.LogDebug(
-                "EnrichBillingModelFallback: LineItem={Line} secondary item → BillingModel={Billing}",
-                item.LineItem, primaryBilling);
+                "Item loaded: LineItem={Line}, Product={ProductId}, Quantity={Qty}, Years={Years}, " +
+                "Hierarchy={Hierarchy}, BillingModel={BillingModel}",
+                context.LineItem, context.ProductId, context.Quantity, context.Years,
+                context.ItemHierarchyId, context.LicenseAttributeLicenseValue);
         }
 
-        _logger.LogInformation(
-            "EnrichBillingModelFallback: updated {Count} secondary items",
-            updated);
-    }
+        _logger.LogInformation("Loaded {ItemCount} items from existing cart", items.Count);
 
-    /// <summary>
-    /// SECTION 1.11.2: Enrich usage pricing model with fallback chain:
-    /// 1. Use item's existing value (from JSON or loaded)
-    /// 2. Fall back to license's value
-    /// 3. Apply OTSF default (e.g., 1) if category is OTSF
-    /// 4. Apply CBEP default (e.g., 2) if category is CBEP
-    ///
-    /// SQL equivalent (simplified):
-    /// <code>
-    /// UPDATE items
-    /// SET usage_pricing_model_id = ISNULL(item.usage_pricing_model_id,
-    ///     ISNULL(license.usage_pricing_model_id,
-    ///     CASE WHEN item.license_category_name = 'OTSF' THEN 1 ELSE NULL END))
-    /// </code>
-    ///
-    /// Enriches items in-place. Non-fatal: items without a resolved value retain null.
-    /// </summary>
-    /// <param name="items">Items to enrich in-place.</param>
-    /// <param name="license">License context for fallback values.</param>
-    /// <param name="otsfDefaultId">Default usage pricing model ID for OTSF items (typically 1).</param>
-    /// <param name="cbepDefaultId">Default usage pricing model ID for CBEP items (typically 2).</param>
-    public void EnrichUsagePricingModel(
-        List<CartOrderItemContext> items,
-        CartOrderLicenseContext? license,
-        byte otsfDefaultId = 1,
-        byte cbepDefaultId = 2)
-    {
-        if (items is null || items.Count == 0)
-        {
-            _logger.LogDebug("EnrichUsagePricingModel: no items to enrich");
-            return;
-        }
-
-        int enriched = 0;
-
-        foreach (var item in items)
-        {
-            // Skip if already has a value
-            if (item.UsagePricingModelId.HasValue)
-                continue;
-
-            byte? resolvedValue = null;
-
-            // Step 2: License fallback
-            if (license?.UsagePricingModelId.HasValue == true)
-            {
-                resolvedValue = license.UsagePricingModelId;
-                _logger.LogDebug(
-                    "EnrichUsagePricingModel: LineItem={Line} → {Value} (from license)",
-                    item.LineItem, resolvedValue);
-            }
-            // Step 3-4: Category defaults
-            else if (!string.IsNullOrWhiteSpace(item.LicenseCategoryName))
-            {
-                if (string.Equals(item.LicenseCategoryName, "OTSF", StringComparison.OrdinalIgnoreCase))
-                {
-                    resolvedValue = otsfDefaultId;
-                    _logger.LogDebug(
-                        "EnrichUsagePricingModel: LineItem={Line} OTSF → {Value} (OTSF default)",
-                        item.LineItem, resolvedValue);
-                }
-                else if (string.Equals(item.LicenseCategoryName, "CBEP", StringComparison.OrdinalIgnoreCase))
-                {
-                    resolvedValue = cbepDefaultId;
-                    _logger.LogDebug(
-                        "EnrichUsagePricingModel: LineItem={Line} CBEP → {Value} (CBEP default)",
-                        item.LineItem, resolvedValue);
-                }
-            }
-
-            if (resolvedValue.HasValue)
-            {
-                item.UsagePricingModelId = resolvedValue;
-                enriched++;
-            }
-        }
-
-        _logger.LogInformation(
-            "EnrichUsagePricingModel: enriched {Count} of {Total} items",
-            enriched, items.Count);
-    }
-
-    /// <summary>
-    /// SECTION 1.11.3: Enrich retention model with fallback chain:
-    /// 1. Use item's existing value (from JSON or loaded)
-    /// 2. Fall back to license's value
-    /// 3. Apply OTSF/CBSB default (e.g., 5) if category is OTSF or CBSB
-    ///
-    /// SQL equivalent (simplified):
-    /// <code>
-    /// UPDATE items
-    /// SET retention_model_id = ISNULL(item.retention_model_id,
-    ///     ISNULL(license.retention_model_id,
-    ///     CASE WHEN item.license_category_name IN ('OTSF', 'CBSB') THEN 5 ELSE NULL END))
-    /// </code>
-    ///
-    /// Enriches items in-place. Non-fatal: items without a resolved value retain null.
-    /// </summary>
-    /// <param name="items">Items to enrich in-place.</param>
-    /// <param name="license">License context for fallback values.</param>
-    /// <param name="otsfCbsbDefaultId">Default retention model ID for OTSF/CBSB items (typically 5).</param>
-    public void EnrichRetentionModel(
-        List<CartOrderItemContext> items,
-        CartOrderLicenseContext? license,
-        byte otsfCbsbDefaultId = 5)
-    {
-        if (items is null || items.Count == 0)
-        {
-            _logger.LogDebug("EnrichRetentionModel: no items to enrich");
-            return;
-        }
-
-        int enriched = 0;
-
-        foreach (var item in items)
-        {
-            // Skip if already has a value
-            if (item.RetentionModelId.HasValue)
-                continue;
-
-            byte? resolvedValue = null;
-
-            // Step 2: License fallback
-            if (license?.RetentionModelId.HasValue == true)
-            {
-                resolvedValue = license.RetentionModelId;
-                _logger.LogDebug(
-                    "EnrichRetentionModel: LineItem={Line} → {Value} (from license)",
-                    item.LineItem, resolvedValue);
-            }
-            // Step 3: Category defaults (OTSF/CBSB)
-            else if (!string.IsNullOrWhiteSpace(item.LicenseCategoryName) &&
-                (string.Equals(item.LicenseCategoryName, "OTSF", StringComparison.OrdinalIgnoreCase) ||
-                 string.Equals(item.LicenseCategoryName, "CBSB", StringComparison.OrdinalIgnoreCase)))
-            {
-                resolvedValue = otsfCbsbDefaultId;
-                _logger.LogDebug(
-                    "EnrichRetentionModel: LineItem={Line} {Category} → {Value} (OTSF/CBSB default)",
-                    item.LineItem, item.LicenseCategoryName, resolvedValue);
-            }
-
-            if (resolvedValue.HasValue)
-            {
-                item.RetentionModelId = resolvedValue;
-                enriched++;
-            }
-        }
-
-        _logger.LogInformation(
-            "EnrichRetentionModel: enriched {Count} of {Total} items",
-            enriched, items.Count);
-    }
-
-    /// <summary>
-    /// SECTION 1.11.4: Enrich product platform with fallback chain:
-    /// 1. Use item's existing value (from JSON or loaded)
-    /// 2. Fall back to license's value
-    /// 3. Apply CBEP default (e.g., 1) if category is CBEP
-    ///
-    /// SQL equivalent (simplified):
-    /// <code>
-    /// UPDATE items
-    /// SET product_platform_id = ISNULL(item.product_platform_id,
-    ///     ISNULL(license.product_platform_id,
-    ///     CASE WHEN item.license_category_name = 'CBEP' THEN 1 ELSE NULL END))
-    /// </code>
-    ///
-    /// Enriches items in-place. Non-fatal: items without a resolved value retain null.
-    /// </summary>
-    /// <param name="items">Items to enrich in-place.</param>
-    /// <param name="license">License context for fallback values.</param>
-    /// <param name="cbepDefaultId">Default product platform ID for CBEP items (typically 1).</param>
-    public void EnrichProductPlatform(
-        List<CartOrderItemContext> items,
-        CartOrderLicenseContext? license,
-        byte cbepDefaultId = 1)
-    {
-        if (items is null || items.Count == 0)
-        {
-            _logger.LogDebug("EnrichProductPlatform: no items to enrich");
-            return;
-        }
-
-        int enriched = 0;
-
-        foreach (var item in items)
-        {
-            // Skip if already has a value
-            if (item.ProductPlatformId.HasValue)
-                continue;
-
-            byte? resolvedValue = null;
-
-            // Step 2: License fallback
-            if (license?.ProductPlatformId.HasValue == true)
-            {
-                resolvedValue = license.ProductPlatformId;
-                _logger.LogDebug(
-                    "EnrichProductPlatform: LineItem={Line} → {Value} (from license)",
-                    item.LineItem, resolvedValue);
-            }
-            // Step 3: Category defaults (CBEP)
-            else if (!string.IsNullOrWhiteSpace(item.LicenseCategoryName) &&
-                string.Equals(item.LicenseCategoryName, "CBEP", StringComparison.OrdinalIgnoreCase))
-            {
-                resolvedValue = cbepDefaultId;
-                _logger.LogDebug(
-                    "EnrichProductPlatform: LineItem={Line} CBEP → {Value} (CBEP default)",
-                    item.LineItem, resolvedValue);
-            }
-
-            if (resolvedValue.HasValue)
-            {
-                item.ProductPlatformId = resolvedValue;
-                enriched++;
-            }
-        }
-
-        _logger.LogInformation(
-            "EnrichProductPlatform: enriched {Count} of {Total} items",
-            enriched, items.Count);
-    }
-
-    /// <summary>
-    /// SECTION 1.15: Apply default storage GB for items with null storage.
-    ///
-    /// SQL equivalent:
-    /// <code>
-    /// UPDATE items
-    /// SET storage_gb = fn_get_item_storage_gb(
-    ///     item.license_category_name,
-    ///     product.product_id,
-    ///     item.usage_pricing_model_id,
-    ///     license.storage_gb)
-    /// WHERE items.storage_gb IS NULL
-    /// </code>
-    ///
-    /// Logic: Preserve SQL control flow by delegating storage resolution to repository.
-    /// No storage calculation rules are implemented in the service layer.
-    ///
-    /// Enriches items in-place. Non-fatal: items that cannot be resolved retain null.
-    /// </summary>
-    /// <param name="items">Items to enrich in-place.</param>
-    /// <param name="products">Product dictionary for lookups.</param>
-    /// <param name="license">License context for fallback storage value.</param>
-    public void EnrichDefaultStorageGb(
-        List<CartOrderItemContext> items,
-        Dictionary<int, CartOrderProductContext> products,
-        CartOrderLicenseContext? license)
-    {
-        if (items is null || items.Count == 0)
-        {
-            _logger.LogDebug("EnrichDefaultStorageGb: no items to enrich");
-            return;
-        }
-
-        // TODO: Replace Repository.GetItemStorageGbAsync with the actual SQL
-        // fn_get_item_storage_gb implementation once the SQL function definition
-        // and full database access are available.
-
-        int enriched = 0;
-
-        foreach (var item in items)
-        {
-            // SQL: WHERE storage_gb IS NULL
-            if (item.StorageGb.HasValue)
-                continue;
-
-            var resolvedStorage = _repository.GetItemStorageGbAsync(
-                item.Quantity,
-                item.LicenseCategoryName ?? string.Empty,
-                item.UsagePricingModelId,
-                CancellationToken.None).GetAwaiter().GetResult();
-
-            if (resolvedStorage.HasValue)
-            {
-                item.StorageGb = resolvedStorage;
-                enriched++;
-
-                _logger.LogDebug(
-                    "EnrichDefaultStorageGb: LineItem={Line} resolved StorageGb={Storage}",
-                    item.LineItem, resolvedStorage);
-            }
-        }
-
-        _logger.LogInformation(
-            "EnrichDefaultStorageGb: enriched {Count} of {Total} items",
-            enriched, items.Count);
+        return items;
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1.9 & 1.9.1: Load Product Line by License Category
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// SECTION 1.9 & 1.9.1: Get product line for license category and locale
+    /// 
+    /// Purpose: Map license_category_id + locale to product_line_id for upgrade determination.
+    /// Used to identify which products are available for upgrades in a specific region/category.
+    /// 
+    /// Database Query:
+    ///   SELECT product_line_id FROM license_category_product_line
+    ///   WHERE license_category_id = @licenseCategoryId
+    ///   AND language_code = @languageCode
+    ///   AND location_code = @locationCode
+    /// 
+    /// Returns: product_line_id if found, null if not found (fallback to license.product_line_id)
+    /// </summary>
+    public async Task<int?> LoadProductLineByLicenseCategoryAsync(
+        int? licenseCategoryId,
+        string? languageCode,
+        string? locationCode,
+        CancellationToken ct = default)
+    {
+        // Early return: null category
+        if (!licenseCategoryId.HasValue || licenseCategoryId.Value <= 0)
+        {
+            _logger.LogDebug("LicenseCategoryId is null or invalid, skipping product line lookup");
+            return null;
+        }
+
+        _logger.LogDebug(
+            "Loading product line for category: LicenseCategoryId={CategoryId}, Language={Language}, Location={Location}",
+            licenseCategoryId, languageCode, locationCode);
+
+        try
+        {
+            // Query repository for product line mapping
+            var productLineEntity = await _repository.GetProductLineByLicenseCategoryAndLocaleAsync(
+                licenseCategoryId.Value,
+                languageCode,
+                locationCode,
+                ct);
+
+            if (productLineEntity is null)
+            {
+                _logger.LogDebug(
+                    "Product line not found for category {CategoryId}, using fallback",
+                    licenseCategoryId);
+                return null;
+            }
+
+            _logger.LogDebug(
+                "Product line loaded: Category={CategoryId}, ProductLineId={ProductLineId}",
+                licenseCategoryId, productLineEntity.ProductLineId);
+
+            return productLineEntity.ProductLineId;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error loading product line for category {CategoryId}", 
+                licenseCategoryId);
+            throw;
+        }
+    }
+     // ══════════════════════════════════════════════════════════════════════════════════
     // SECTION 1.9.1.1 & 1.9.1.2: Business Billing Model Resolution
     // ══════════════════════════════════════════════════════════════════════════════════
 
@@ -2356,10 +2134,7 @@ public class CartOrderPreparationService
             return (currentBillingModelId, currentLicenseAttributeId);
         }
 
-        // TODO: Check if product line is in BUSINESS_PRODUCT_LINE config
-        // For now, assume 300 and 55 are business
-        var businessProductLines = new[] { 300, 55 };
-        if (!businessProductLines.Contains(productLineId.Value))
+        if (!await _repository.IsBusinessProductLineAsync(productLineId.Value, ct))
         {
             _logger.LogDebug(
                 "ApplyLocationBasedBillingModelAsync: product line {Id} not in business set",
@@ -2441,13 +2216,146 @@ public class CartOrderPreparationService
     /// <summary>Helper: Check if a billing model is in the DEFAULT_BUSINESS_BILLING_MODEL set.</summary>
     private async Task<bool> IsDefaultBusinessBillingModelAsync(int billingModelId, CancellationToken ct)
     {
-        // TODO: Check if billingModelId is in DEFAULT_BUSINESS_BILLING_MODEL config
-        // For now, assume common business defaults: {110, 12, ...}
-        var defaultBusinessModels = new[] { 110, 12, 111, 112, 210, 211, 212, 13, 113, 213 };
-        return defaultBusinessModels.Contains(billingModelId);
+        return await _repository.IsDefaultBusinessBillingModelAsync(billingModelId, ct);
+    }
+
+
+
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1.9.2: Product Line Remapping
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// SECTION 1.9.2: Remap legacy product line IDs to canonical values.
+    ///
+    /// SQL equivalent:
+    /// <code>
+    /// IF @product_line_id IN (1, 6)
+    ///   SELECT @product_line_id = CASE
+    ///     WHEN @product_line_id = 1 THEN 100
+    ///     WHEN @product_line_id = 6 THEN 200
+    ///   END
+    /// </code>
+    ///
+    /// Non-fatal: returns the input if not in the remap set.
+    /// </summary>
+    /// <param name="productLineId">The product line ID to remap.</param>
+    /// <returns>The remapped product line ID (1→100, 6→200, others unchanged).</returns>
+    public int? RemapProductLineId(int? productLineId)
+    {
+        if (!productLineId.HasValue || productLineId.Value <= 0)
+            return productLineId;
+
+        var remapped = productLineId.Value switch
+        {
+            1 => 100,
+            6 => 200,
+            _ => productLineId.Value
+        };
+
+        if (remapped != productLineId.Value)
+            _logger.LogDebug(
+                "RemapProductLineId: product line {OldId} → {NewId}",
+                productLineId, remapped);
+
+        return remapped;
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1.10: Down-Rev Category Name Normalization
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// SECTION 1.10: Normalize down-rev category names to canonical names.
+    ///
+    /// SQL equivalent:
+    /// <code>
+    /// UPDATE @item_table
+    /// SET license_category_name = CASE
+    ///   WHEN license_category_name = 'AD' THEN 'ADP'
+    ///   WHEN license_category_name IN ('WAV', 'SS') THEN 'WSAV'
+    ///   WHEN license_category_name IN ('WISE', 'WSAE') THEN 'WSAI'
+    ///   WHEN license_category_name = 'WISC' THEN 'WSAC'
+    /// END
+    /// WHERE license_category_name IN ('SS', 'WAV', 'WISC', 'WISE', 'WSAE', 'AD')
+    /// </code>
+    ///
+    /// Normalizes both item categories and license categories for downstream comparisons.
+    /// No-op if category is already canonical.
+    /// </summary>
+    /// <param name="items">Items to normalize in-place.</param>
+    /// <param name="license">License context to normalize in-place (may be null).</param>
+    public void NormalizeDownRevCategoryNames(
+        List<CartOrderItemContext> items,
+        CartOrderLicenseContext? license)
+    {
+        if (items is null || items.Count == 0)
+        {
+            _logger.LogDebug("NormalizeDownRevCategoryNames: no items to normalize");
+            return;
+        }
+
+        int itemsUpdated = 0;
+
+        foreach (var item in items)
+        {
+            var normalized = NormalizeItemCategory(item.LicenseCategoryName);
+            if (normalized != item.LicenseCategoryName)
+            {
+                _logger.LogDebug(
+                    "NormalizeDownRevCategoryNames: LineItem={Line} {OldName} → {NewName}",
+                    item.LineItem, item.LicenseCategoryName, normalized);
+                item.LicenseCategoryName = normalized;
+                itemsUpdated++;
+            }
+        }
+
+        if (license is not null)
+        {
+            var normalized = NormalizeLicenseCategory(license.LicenseCategoryName);
+            if (normalized != license.LicenseCategoryName)
+            {
+                _logger.LogDebug(
+                    "NormalizeDownRevCategoryNames: license category {OldName} → {NewName}",
+                    license.LicenseCategoryName, normalized);
+                license.LicenseCategoryName = normalized;
+            }
+        }
+
+        _logger.LogInformation(
+            "NormalizeDownRevCategoryNames: normalized {ItemsUpdated} items",
+            itemsUpdated);
+    }
+
+    private static string? NormalizeItemCategory(string? categoryName)
+    {
+        if (string.IsNullOrWhiteSpace(categoryName))
+            return categoryName;
+
+        return categoryName switch
+        {
+            "AD" => "ADP",
+            "WAV" or "SS" => "WSAV",
+            "WISE" or "WSAE" => "WSAI",
+            "WISC" => "WSAC",
+            _ => categoryName
+        };
+    }
+
+    private static string? NormalizeLicenseCategory(string? categoryName)
+    {
+        if (string.IsNullOrWhiteSpace(categoryName))
+            return categoryName;
+
+        return categoryName switch
+        {
+            "WAV" or "SS" => "WSAV",
+            "WISE" or "WSAE" => "WSAI",
+            "WISC" => "WSAC",
+            _ => categoryName
+        };
+    }
+        // ══════════════════════════════════════════════════════════════════════════════════
     // SECTION 1.11: Global LicenseAttributeLicenseValue Fallback from Existing Items
     // ══════════════════════════════════════════════════════════════════════════════════
 
@@ -2524,7 +2432,7 @@ public class CartOrderPreparationService
                 primaryExisting.LineItem);
 
             var copiedBillingModel = primaryExisting.LicenseAttributeLicenseValue;
-            var copiedLicenseAttributeId = currentLicenseAttributeId ?? primaryExisting.LicenseAttributeId;
+            var copiedLicenseAttributeId = primaryExisting.LicenseAttributeId;
 
             if (!copiedBillingModel.HasValue && !copiedLicenseAttributeId.HasValue)
             {
@@ -2546,6 +2454,525 @@ public class CartOrderPreparationService
             return (currentBillingModelId, currentLicenseAttributeId);
         }
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // SECTION 1.11: Item Enrichment (Billing Model, Usage/Retention/Platform Defaults)
+    // ══════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// SECTION 1.11.1: Apply billing model fallback from primary item to secondary items.
+    ///
+    /// SQL equivalent:
+    /// <code>
+    /// UPDATE secondary_items
+    /// SET license_attribute_license_value = primary_item.license_attribute_license_value
+    /// WHERE secondary_items.license_attribute_license_value IS NULL
+    ///   AND secondary_items.item_hierarchy_id = 2
+    /// </code>
+    ///
+    /// Logic: Secondary items (ItemHierarchyId=2) inherit the billing model from their
+    /// linked primary item (via CartItemBundleId).  No-op if billing model is already set.
+    /// </summary>
+    /// <param name="items">Items to enrich in-place.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public void EnrichBillingModelFallback(List<CartOrderItemContext> items, CancellationToken ct = default)
+    {
+        if (items is null || items.Count == 0)
+        {
+            _logger.LogDebug("EnrichBillingModelFallback: no items to enrich");
+            return;
+        }
+
+        // Build a map: cart_item_bundle_id → primary_item.license_attribute_license_value
+        var primaryBillingByBundle = items
+            .Where(i => i.ItemHierarchyId == 1 && i.CartItemBundleId.HasValue && i.LicenseAttributeLicenseValue.HasValue)
+            .GroupBy(i => i.CartItemBundleId!.Value)
+            .ToDictionary(g => g.Key, g => g.First().LicenseAttributeLicenseValue!.Value);
+
+        int updated = 0;
+
+        foreach (var item in items)
+        {
+            // Only apply to secondary items (ItemHierarchyId=2) that lack a billing model
+            if (item.ItemHierarchyId != 2 || item.LicenseAttributeLicenseValue.HasValue)
+                continue;
+
+            if (!item.CartItemBundleId.HasValue ||
+                !primaryBillingByBundle.TryGetValue(item.CartItemBundleId.Value, out var primaryBilling))
+            {
+                _logger.LogDebug(
+                    "EnrichBillingModelFallback: LineItem={Line} secondary item has no linked primary billing model",
+                    item.LineItem);
+                continue;
+            }
+
+            item.LicenseAttributeLicenseValue = primaryBilling;
+            updated++;
+
+            _logger.LogDebug(
+                "EnrichBillingModelFallback: LineItem={Line} secondary item → BillingModel={Billing}",
+                item.LineItem, primaryBilling);
+        }
+
+        _logger.LogInformation(
+            "EnrichBillingModelFallback: updated {Count} secondary items",
+            updated);
+    }
+
+    /// <summary>
+    /// SECTION 1.12: Enrich usage pricing model in SQL-equivalent update order.
+    ///
+    /// SQL equivalent:
+    /// <code>
+    /// -- Step 1
+    /// UPDATE @item_table
+    /// SET usage_pricing_model_id = l.usage_pricing_model_id
+    /// FROM @item_table i
+    /// INNER JOIN @license_table l
+    ///     ON i.license_category_name = l.license_category_name
+    /// WHERE i.usage_pricing_model_id IS NULL
+    ///   AND l.usage_pricing_model_id IS NOT NULL
+    ///
+    /// -- Step 2
+    /// IF @partner_id IS NOT NULL
+    /// BEGIN
+    ///     UPDATE @item_table
+    ///     SET usage_pricing_model_id = ISNULL(m.usage_pricing_model_id, 1)
+    ///     FROM @item_table i
+    ///     INNER JOIN dbo.license_category lc
+    ///         ON i.license_category_name = lc.license_category_name
+    ///     INNER JOIN dbo.partner_usage_pricing_model m
+    ///         ON lc.license_category_id = m.license_category_id
+    ///     WHERE m.partner_id = @partner_id
+    ///       AND m.site_id = @site_id
+    ///       AND i.usage_pricing_model_id IS NULL
+    /// END
+    /// ELSE
+    /// BEGIN
+    ///     UPDATE @item_table
+    ///     SET usage_pricing_model_id = 1
+    ///     WHERE license_category_name IN ('OTSF','CBEP')
+    ///       AND usage_pricing_model_id IS NULL
+    /// END
+    /// </code>
+    ///
+    /// Enriches items in-place. Non-fatal: items without a resolved value retain null.
+    /// </summary>
+    /// <param name="items">Items to enrich in-place.</param>
+    /// <param name="license">License context for fallback values.</param>
+    /// <param name="partnerId">Partner ID used for partner_usage_pricing_model lookup.</param>
+    /// <param name="siteId">Site ID used for partner_usage_pricing_model lookup.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task EnrichUsagePricingModel(
+        List<CartOrderItemContext> items,
+        CartOrderLicenseContext? license,
+        int? partnerId,
+        string? siteId,
+        CancellationToken ct = default)
+    {
+        if (items is null || items.Count == 0)
+        {
+            _logger.LogDebug("EnrichUsagePricingModel: no items to enrich");
+            return;
+        }
+
+        int enriched = 0;
+
+        // Step 1: copy usage_pricing_model_id from license row only when category matches.
+        foreach (var item in items)
+        {
+            if (item.UsagePricingModelId.HasValue)
+                continue;
+
+            if (license?.UsagePricingModelId.HasValue == true &&
+                string.Equals(item.LicenseCategoryName, license.LicenseCategoryName, StringComparison.OrdinalIgnoreCase))
+            {
+                item.UsagePricingModelId = license.UsagePricingModelId;
+                enriched++;
+
+                _logger.LogDebug(
+                    "EnrichUsagePricingModel: LineItem={Line} → {Value} (from license)",
+                    item.LineItem, item.UsagePricingModelId);
+            }
+        }
+
+        // Step 2 / Step 3: partner-specific update when partner exists; category fallback otherwise.
+        if (partnerId.HasValue)
+        {
+            foreach (var item in items)
+            {
+                if (item.UsagePricingModelId.HasValue || string.IsNullOrWhiteSpace(item.LicenseCategoryName))
+                    continue;
+
+                var (found, usagePricingModelId) = await _repository.GetPartnerUsagePricingModelByCategoryAsync(
+                    partnerId.Value,
+                    siteId,
+                    item.LicenseCategoryName,
+                    ct);
+
+                if (!found)
+                    continue;
+
+                // SQL ISNULL(m.usage_pricing_model_id, 1)
+                item.UsagePricingModelId = usagePricingModelId ?? (byte)1;
+                enriched++;
+
+                _logger.LogDebug(
+                    "EnrichUsagePricingModel: LineItem={Line} {Category} → {Value} (partner/site)",
+                    item.LineItem, item.LicenseCategoryName, item.UsagePricingModelId);
+            }
+        }
+        else
+        {
+            foreach (var item in items)
+            {
+                if (item.UsagePricingModelId.HasValue)
+                    continue;
+
+                if (!string.Equals(item.LicenseCategoryName, "OTSF", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(item.LicenseCategoryName, "CBEP", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                item.UsagePricingModelId = 1;
+                enriched++;
+
+                _logger.LogDebug(
+                    "EnrichUsagePricingModel: LineItem={Line} {Category} → {Value} (default)",
+                    item.LineItem, item.LicenseCategoryName, item.UsagePricingModelId);
+            }
+        }
+
+        _logger.LogInformation(
+            "EnrichUsagePricingModel: enriched {Count} of {Total} items",
+            enriched, items.Count);
+    }
+
+    /// <summary>
+    /// SECTION 1.13: Enrich retention model in SQL-equivalent update order.
+    ///
+    /// SQL equivalent:
+    /// <code>
+    /// -- Step 1
+    /// UPDATE @item_table
+    /// SET
+    ///     retention_model_id = l.retention_model_id,
+    ///     retention_term = l.retention_term
+    /// FROM @item_table i
+    /// INNER JOIN @license_table l
+    ///     ON i.license_category_name = l.license_category_name
+    /// WHERE i.retention_model_id IS NULL
+    ///   AND l.retention_model_id IS NOT NULL;
+    ///
+    /// -- Step 2
+    /// IF @partner_id IS NOT NULL
+    /// BEGIN
+    ///     UPDATE @item_table
+    ///     SET retention_model_id = ISNULL(m.retention_model_id, 1)
+    ///     FROM @item_table i
+    ///     INNER JOIN dbo.license_category lc
+    ///         ON i.license_category_name = lc.license_category_name
+    ///     INNER JOIN dbo.partner_retention_model m
+    ///         ON lc.license_category_id = m.license_category_id
+    ///     WHERE m.partner_id = @partner_id
+    ///       AND m.site_id = @site_id
+    ///       AND i.retention_model_id IS NULL;
+    /// END
+    /// ELSE
+    /// BEGIN
+    ///     UPDATE @item_table
+    ///     SET
+    ///         retention_model_id = 1,
+    ///         retention_term = 1
+    ///     WHERE license_category_name IN ('OTSF','CBSB')
+    ///       AND retention_model_id IS NULL;
+    /// END
+    /// </code>
+    ///
+    /// Enriches items in-place. Non-fatal: items without a resolved value retain null.
+    /// </summary>
+    /// <param name="items">Items to enrich in-place.</param>
+    /// <param name="license">License context for fallback values.</param>
+    /// <param name="partnerId">Partner ID used for partner_retention_model lookup.</param>
+    /// <param name="siteId">Site ID used for partner_retention_model lookup.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task EnrichRetentionModel(
+        List<CartOrderItemContext> items,
+        CartOrderLicenseContext? license,
+        int? partnerId,
+        string? siteId,
+        CancellationToken ct = default)
+    {
+        if (items is null || items.Count == 0)
+        {
+            _logger.LogDebug("EnrichRetentionModel: no items to enrich");
+            return;
+        }
+
+        int enriched = 0;
+
+        // Step 1: copy from matching license row only when category matches.
+        foreach (var item in items)
+        {
+            if (item.RetentionModelId.HasValue)
+                continue;
+
+            if (license?.RetentionModelId.HasValue == true &&
+                string.Equals(item.LicenseCategoryName, license.LicenseCategoryName, StringComparison.OrdinalIgnoreCase))
+            {
+                item.RetentionModelId = license.RetentionModelId;
+                item.RetentionTerm = license.RetentionTerm;
+                enriched++;
+
+                _logger.LogDebug(
+                    "EnrichRetentionModel: LineItem={Line} → {Model} / {Term} (from license)",
+                    item.LineItem, item.RetentionModelId, item.RetentionTerm);
+            }
+        }
+
+        if (partnerId.HasValue)
+        {
+            foreach (var item in items)
+            {
+                if (item.RetentionModelId.HasValue || string.IsNullOrWhiteSpace(item.LicenseCategoryName))
+                    continue;
+
+                var (found, retentionModelId) = await _repository.GetPartnerRetentionModelByCategoryAsync(
+                    partnerId.Value,
+                    siteId,
+                    item.LicenseCategoryName,
+                    ct);
+
+                if (!found)
+                    continue;
+
+                item.RetentionModelId = retentionModelId ?? (byte)1;
+                enriched++;
+
+                _logger.LogDebug(
+                    "EnrichRetentionModel: LineItem={Line} {Category} → {Model} (partner/site)",
+                    item.LineItem, item.LicenseCategoryName, item.RetentionModelId);
+            }
+        }
+        else
+        {
+            foreach (var item in items)
+            {
+                if (item.RetentionModelId.HasValue || string.IsNullOrWhiteSpace(item.LicenseCategoryName))
+                    continue;
+
+                if (!string.Equals(item.LicenseCategoryName, "OTSF", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(item.LicenseCategoryName, "CBSB", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                item.RetentionModelId = 1;
+                item.RetentionTerm = 1;
+                enriched++;
+
+                _logger.LogDebug(
+                    "EnrichRetentionModel: LineItem={Line} {Category} → {Model}/{Term} (default)",
+                    item.LineItem, item.LicenseCategoryName, item.RetentionModelId, item.RetentionTerm);
+            }
+        }
+
+        _logger.LogInformation(
+            "EnrichRetentionModel: enriched {Count} of {Total} items",
+            enriched, items.Count);
+    }
+
+    /// <summary>
+    /// SECTION 1.14: Enrich product platform in SQL-equivalent update order.
+    ///
+    /// SQL equivalent:
+    /// <code>
+    /// -- Step 1
+    /// UPDATE @item_table
+    /// SET product_platform_id = l.product_platform_id
+    /// FROM @item_table i
+    /// INNER JOIN @license_table l
+    ///     ON i.license_category_name = l.license_category_name
+    /// WHERE i.product_platform_id IS NULL
+    ///   AND l.product_platform_id IS NOT NULL
+    ///
+    /// -- Step 2
+    /// IF @partner_id IS NOT NULL
+    /// BEGIN
+    ///     UPDATE @item_table
+    ///     SET product_platform_id = ISNULL(m.product_platform_id, 1)
+    ///     FROM @item_table i
+    ///     INNER JOIN dbo.license_category lc
+    ///         ON i.license_category_name = lc.license_category_name
+    ///     INNER JOIN dbo.partner_product_platform m
+    ///         ON lc.license_category_id = m.license_category_id
+    ///     WHERE m.partner_id = @partner_id
+    ///       AND m.site_id = @site_id
+    ///       AND i.product_platform_id IS NULL
+    /// END
+    /// ELSE
+    /// BEGIN
+    ///     UPDATE @item_table
+    ///     SET product_platform_id = 1
+    ///     WHERE license_category_name = 'CBEP'
+    ///       AND product_platform_id IS NULL
+    /// END
+    /// </code>
+    ///
+    /// Enriches items in-place. Non-fatal: items without a resolved value retain null.
+    /// </summary>
+    /// <param name="items">Items to enrich in-place.</param>
+    /// <param name="license">License context for fallback values.</param>
+    /// <param name="partnerId">Partner ID used for partner_product_platform lookup.</param>
+    /// <param name="siteId">Site ID used for partner_product_platform lookup.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task EnrichProductPlatform(
+        List<CartOrderItemContext> items,
+        CartOrderLicenseContext? license,
+        int? partnerId,
+        string? siteId,
+        CancellationToken ct = default)
+    {
+        if (items is null || items.Count == 0)
+        {
+            _logger.LogDebug("EnrichProductPlatform: no items to enrich");
+            return;
+        }
+
+        int enriched = 0;
+
+        // Step 1: copy from the matching license row only when the category matches.
+        foreach (var item in items)
+        {
+            if (item.ProductPlatformId.HasValue)
+                continue;
+
+            if (license?.ProductPlatformId.HasValue == true &&
+                string.Equals(item.LicenseCategoryName, license.LicenseCategoryName, StringComparison.OrdinalIgnoreCase))
+            {
+                item.ProductPlatformId = license.ProductPlatformId;
+                enriched++;
+
+                _logger.LogDebug(
+                    "EnrichProductPlatform: LineItem={Line} → {Value} (from license)",
+                    item.LineItem, item.ProductPlatformId);
+            }
+        }
+
+        if (partnerId.HasValue)
+        {
+            foreach (var item in items)
+            {
+                if (item.ProductPlatformId.HasValue || string.IsNullOrWhiteSpace(item.LicenseCategoryName))
+                    continue;
+
+                var (found, productPlatformId) = await _repository.GetPartnerProductPlatformByCategoryAsync(
+                    partnerId.Value,
+                    siteId,
+                    item.LicenseCategoryName,
+                    ct);
+
+                if (!found)
+                    continue;
+
+                item.ProductPlatformId = productPlatformId ?? (byte)1;
+                enriched++;
+
+                _logger.LogDebug(
+                    "EnrichProductPlatform: LineItem={Line} {Category} → {Value} (partner/site)",
+                    item.LineItem, item.LicenseCategoryName, item.ProductPlatformId);
+            }
+        }
+        else
+        {
+            foreach (var item in items)
+            {
+                if (item.ProductPlatformId.HasValue)
+                    continue;
+
+                if (!string.Equals(item.LicenseCategoryName, "CBEP", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                item.ProductPlatformId = 1;
+                enriched++;
+
+                _logger.LogDebug(
+                    "EnrichProductPlatform: LineItem={Line} CBEP → {Value} (default)",
+                    item.LineItem, item.ProductPlatformId);
+            }
+        }
+
+        _logger.LogInformation(
+            "EnrichProductPlatform: enriched {Count} of {Total} items",
+            enriched, items.Count);
+    }
+
+    /// <summary>
+    /// SECTION 1.15: Apply default storage GB for items with null storage.
+    ///
+    /// SQL equivalent:
+    /// <code>
+    /// UPDATE items
+    /// SET storage_gb = fn_get_item_storage_gb(
+    ///     item.license_category_name,
+    ///     product.product_id,
+    ///     item.usage_pricing_model_id,
+    ///     license.storage_gb)
+    /// WHERE items.storage_gb IS NULL
+    /// </code>
+    ///
+    /// Logic: Preserve SQL control flow by delegating storage resolution to repository.
+    /// No storage calculation rules are implemented in the service layer.
+    ///
+    /// Enriches items in-place. Non-fatal: items that cannot be resolved retain null.
+    /// </summary>
+    /// <param name="items">Items to enrich in-place.</param>
+    /// <param name="products">Product dictionary for lookups.</param>
+    /// <param name="license">License context for fallback storage value.</param>
+    public void EnrichDefaultStorageGb(
+        List<CartOrderItemContext> items,
+        Dictionary<int, CartOrderProductContext> products,
+        CartOrderLicenseContext? license)
+    {
+        if (items is null || items.Count == 0)
+        {
+            _logger.LogDebug("EnrichDefaultStorageGb: no items to enrich");
+            return;
+        }
+
+        // TODO: Replace Repository.GetItemStorageGbAsync with the actual SQL
+        // fn_get_item_storage_gb implementation once the SQL function definition
+        // and full database access are available.
+
+        int enriched = 0;
+
+        foreach (var item in items)
+        {
+            // SQL: WHERE storage_gb IS NULL
+            if (item.StorageGb.HasValue)
+                continue;
+
+            var resolvedStorage = _repository.GetItemStorageGbAsync(
+                item.Quantity,
+                item.LicenseCategoryName ?? string.Empty,
+                item.UsagePricingModelId,
+                CancellationToken.None).GetAwaiter().GetResult();
+
+            if (resolvedStorage.HasValue)
+            {
+                item.StorageGb = resolvedStorage;
+                enriched++;
+
+                _logger.LogDebug(
+                    "EnrichDefaultStorageGb: LineItem={Line} resolved StorageGb={Storage}",
+                    item.LineItem, resolvedStorage);
+            }
+        }
+
+        _logger.LogInformation(
+            "EnrichDefaultStorageGb: enriched {Count} of {Total} items",
+            enriched, items.Count);
+    }
+
+   
+
 
     // ══════════════════════════════════════════════════════════════════════════════════
     // SECTION 1.15: Storage GB Default Calculation
@@ -2633,138 +3060,6 @@ public class CartOrderPreparationService
             "EnrichDefaultStorageGbWithRepositoryAsync: enriched {Count} of {Total} items",
             enriched, items.Count);
     }
-
-    /// <summary>
-    /// SECTION 1.2.2: Apply currency fallback using partner configuration.
-    ///
-    /// SQL equivalent:
-    /// <code>
-    /// IF @currency_id IS NULL AND @partner_id IS NOT NULL
-    /// BEGIN
-    ///   SELECT @currency_code = config_value
-    ///   FROM partner_configuration pc
-    ///   WHERE pc.partner_id = @partner_id
-    ///     AND pc.partner_configuration_id = 15
-    ///
-    ///   IF @currency_code IS NOT NULL
-    ///     SELECT @currency_id = c.currency_id
-    ///     FROM currency c WHERE c.currency_code = @currency_code
-    /// END
-    ///
-    /// IF @currency_id IS NULL
-    ///   SELECT @currency_id = 1  -- USD default
-    /// </code>
-    ///
-    /// Non-fatal: logs warnings and falls back to USD (1) if lookup fails.
-    /// </summary>
-    /// <param name="userContext">User context to update with resolved currency.</param>
-    /// <param name="ct">Cancellation token.</param>
-    public async Task ApplyCurrencyFallbackAsync(
-        CartOrderUserContext userContext,
-        CancellationToken ct = default)
-    {
-        if (userContext is null)
-        {
-            _logger.LogDebug("ApplyCurrencyFallbackAsync: userContext is null");
-            return;
-        }
-
-        // Already resolved?
-        if (userContext.CurrencyId.HasValue)
-        {
-            _logger.LogDebug(
-                "ApplyCurrencyFallbackAsync: currency already resolved to {CurrencyId}",
-                userContext.CurrencyId);
-            return;
-        }
-
-        // No partner context?
-        if (!userContext.PartnerId.HasValue)
-        {
-            _logger.LogDebug("ApplyCurrencyFallbackAsync: no partner ID, applying default USD");
-            userContext.CurrencyId = 1;  // USD default
-            return;
-        }
-
-        _logger.LogDebug(
-            "ApplyCurrencyFallbackAsync: attempting partner configuration fallback for PartnerId={PartnerId}",
-            userContext.PartnerId);
-
-        try
-        {
-            // TODO: REPLACE WITH ACTUAL partner_configuration lookup
-            // Query partner_configuration WHERE partner_id = @partner_id AND partner_configuration_id = 15
-            // For now, use a placeholder that returns null (forces USD default)
-            string? partnerCurrencyCode = null;
-
-            if (!string.IsNullOrWhiteSpace(partnerCurrencyCode))
-            {
-                var currencyId = await _repository.LookupCurrencyIdByCodeAsync(partnerCurrencyCode, ct);
-
-                if (currencyId.HasValue)
-                {
-                    userContext.CurrencyId = currencyId;
-                    _logger.LogInformation(
-                        "ApplyCurrencyFallbackAsync: PartnerId={PartnerId} config resolved to {Code} (CurrencyId={Id})",
-                        userContext.PartnerId, partnerCurrencyCode, currencyId);
-                    return;
-                }
-            }
-
-            _logger.LogDebug(
-                "ApplyCurrencyFallbackAsync: partner configuration lookup for PartnerId={PartnerId} returned no currency code",
-                userContext.PartnerId);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "ApplyCurrencyFallbackAsync: error in partner configuration lookup for PartnerId={PartnerId}",
-                userContext.PartnerId);
-        }
-
-        // Fall back to USD (1)
-        userContext.CurrencyId = 1;
-        _logger.LogInformation("ApplyCurrencyFallbackAsync: applying default CurrencyId=1 (USD)");
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // SECTION 1.6: Return Prepared Model
-    // ══════════════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// SECTION 1.6: Assemble complete preparation result
-    /// 
-    /// Purpose: Combine all loaded data (cart, context, license, items, products)
-    /// into a single prepared model that downstream sections can work with.
-    /// 
-    /// Returns: CartOrderPreparedModel containing all loaded and organized data
-    /// </summary>
-    public CartOrderPreparedModel AssemblePreparedModel(
-        Models.Responses.CartOrderResponse? cart,
-        CartOrderUserContext context,
-        CartOrderLicenseContext? license,
-        List<CartOrderItemContext> items,
-        Dictionary<int, CartOrderProductContext> products)
-    {
-        _logger.LogDebug("Assembling prepared model: Cart={HasCart}, Items={ItemCount}, Products={ProductCount}",
-            cart?.VendorOrderCode ?? "NEW", items.Count, products.Count);
-
-        var model = new CartOrderPreparedModel
-        {
-            Cart = cart,
-            UserContext = context,
-            License = license,
-            Items = items,
-            Products = products,
-            PreparedAt = DateTime.UtcNow
-        };
-
-        _logger.LogInformation(
-            "Prepared model assembled: VendorCode={Code}, Items={Items}, Products={Products}",
-            cart?.VendorOrderCode ?? "NEW", items.Count, products.Count);
-
-        return model;
-    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════
@@ -2847,7 +3142,10 @@ public class CartOrderLicenseContext
     public int? LicenseKeycodeTypeId { get; set; }
     /// <summary>License distribution method ID. From license table (Section 1.3.1).</summary>
     public int? LicenseDistributionMethodId { get; set; }
+    /// <summary>Product line ID. From license table (Section 1.3.1).</summary>
+    public int? ProductLineId { get; set; }
     public DateTime LoadedAt { get; set; }
+    public DateTime? NextProcessDate { get; set; }
 }
 
 /// <summary>
@@ -2870,6 +3168,16 @@ public class CartOrderItemContext
     public DateTime? ExpirationDate { get; set; }
     /// <summary>Vendor-supplied expiration date override. Used for WIFI items where Apple/Google provides the date. (Section 2.1.2)</summary>
     public DateTime? VendorExpirationDate { get; set; }
+    public string? VendorOrderItemCode { get; set; }
+    public double? Discount { get; set; }
+    public byte? CartDiscountMethodId { get; set; }
+    public string? OpportunityLineItemId { get; set; }
+    public decimal? UnitPrice { get; set; }
+    public decimal? ItemTotal { get; set; }
+    public decimal? UsagePrice { get; set; }
+    public int? VaultId { get; set; }
+    public string? Vault { get; set; }
+    public int? SapMaterialNumber { get; set; }
     /// <summary>license_attribute_id from existing cart item lookup (Section 1.11 fallback).</summary>
     public int? LicenseAttributeId { get; set; }
     public int? LicenseAttributeLicenseValue { get; set; }
@@ -2939,7 +3247,7 @@ public class CartOrderProductContext
 /// </summary>
 public class CartOrderPreparedModel
 {
-    public Models.Responses.CartOrderResponse? Cart { get; set; }
+    public CartOrderResponse? Cart { get; set; }
     public CartOrderUserContext UserContext { get; set; } = default!;
     /// <summary>
     /// Primary license context. Loaded by keycode for the license category.
@@ -3030,6 +3338,21 @@ public sealed class BundleContext
 /// </summary>
 public sealed class SfdcUnitOverride
 {
+    /// <summary>SQL <c>@unit_override.cart_order_id</c>.</summary>
+    public int CartOrderId { get; set; }
+
+    /// <summary>SQL <c>@unit_override.item_id</c> (mapped from <see cref="CartOrderItemContext.CartOrderItemId"/>).</summary>
+    public int ItemId { get; set; }
+
+    /// <summary>SQL <c>@unit_override.unit_price</c>.</summary>
+    public decimal? UnitPrice { get; set; }
+
+    /// <summary>SQL <c>@unit_override.usage_price</c>.</summary>
+    public decimal? UsagePrice { get; set; }
+
+    /// <summary>SQL <c>@unit_override.item_total</c>.</summary>
+    public decimal? ItemTotal { get; set; }
+
     /// <summary>1-based line number matching <see cref="CartOrderItemContext.LineItem"/>.</summary>
     public int LineItem { get; set; }
 
@@ -3113,9 +3436,11 @@ internal sealed class ItemJsonPayload
     public decimal? Years { get; set; }
 
     [JsonPropertyName("start_date")]
+    [JsonConverter(typeof(NullableDateTimeFromEmptyStringConverter))]
     public DateTime? StartDate { get; set; }
 
     [JsonPropertyName("expiration_date")]
+    [JsonConverter(typeof(NullableDateTimeFromEmptyStringConverter))]
     public DateTime? ExpirationDate { get; set; }
 
     [JsonPropertyName("vendor_expiration_date")]
@@ -3148,6 +3473,73 @@ internal sealed class ItemJsonPayload
     [JsonPropertyName("license_keycode_type_id")]
     public int? LicenseKeycodeTypeId { get; set; }
 
+    [JsonPropertyName("vendor_order_item_code")]
+    public string? VendorOrderItemCode { get; set; }
+
+    [JsonPropertyName("discount")]
+    public double? Discount { get; set; }
+
+    [JsonPropertyName("cart_discount_method_id")]
+    public byte? CartDiscountMethodId { get; set; }
+
+    [JsonPropertyName("opportunity_line_item_id")]
+    public string? OpportunityLineItemId { get; set; }
+
+    [JsonPropertyName("unit_price")]
+    public decimal? UnitPrice { get; set; }
+
+    [JsonPropertyName("item_total")]
+    public decimal? ItemTotal { get; set; }
+
+    [JsonPropertyName("usage_price")]
+    public decimal? UsagePrice { get; set; }
+
+    [JsonPropertyName("vault_id")]
+    public int? VaultId { get; set; }
+
+    [JsonPropertyName("vault")]
+    public List<int>? Vault { get; set; }
+
+    [JsonPropertyName("sap_material_number")]
+    public int? SapMaterialNumber { get; set; }
+
     [JsonPropertyName("amended_contract")]
     public string? AmendedContract { get; set; }
+}
+
+internal sealed class NullableDateTimeFromEmptyStringConverter : JsonConverter<DateTime?>
+{
+    public override DateTime? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Null)
+            return null;
+
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            var text = reader.GetString();
+            if (string.IsNullOrWhiteSpace(text))
+                return null;
+
+            if (DateTime.TryParse(text, out var parsed))
+                return parsed;
+
+            throw new JsonException($"Invalid datetime value: '{text}'.");
+        }
+
+        if (reader.TryGetDateTime(out var dateTime))
+            return dateTime;
+
+        throw new JsonException("Invalid token for nullable DateTime.");
+    }
+
+    public override void Write(Utf8JsonWriter writer, DateTime? value, JsonSerializerOptions options)
+    {
+        if (!value.HasValue)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        writer.WriteStringValue(value.Value);
+    }
 }

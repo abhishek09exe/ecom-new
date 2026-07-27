@@ -72,6 +72,12 @@ public class CartOrderDbContext : DbContext
     public DbSet<LicenseAttributeEntity> LicenseAttributes { get; set; }
 
     /// <summary>
+    /// License-to-billing-model assignments
+    /// Table: [license_attribute_license]
+    /// </summary>
+    public DbSet<LicenseAttributeLicenseEntity> LicenseAttributeLicenses { get; set; }
+
+    /// <summary>
     /// License messages (for monthly process dates, etc.)
     /// Table: [license_message]
     /// </summary>
@@ -84,10 +90,45 @@ public class CartOrderDbContext : DbContext
     public DbSet<LicenseCategoryProductLineEntity> LicenseCategoryProductLines { get; set; }
 
     /// <summary>
+    /// Product-line to billing-model mapping rows
+    /// Table: [license_category_product_line_license_attribute_license_value]
+    /// </summary>
+    public DbSet<LicenseCategoryProductLineLicenseAttributeLicenseValueEntity> LicenseCategoryProductLineLicenseAttributeLicenseValues { get; set; }
+
+    /// <summary>
+    /// Product-to-license-category bridge
+    /// Table: [product_license_category]
+    /// </summary>
+    public DbSet<ProductLicenseCategoryEntity> ProductLicenseCategories { get; set; }
+
+    /// <summary>
     /// Locale to language/location mappings
     /// Table: [locale_language_location] or function [fn_locale_to_lang_loc]
     /// </summary>
     public DbSet<LocaleLanguageLocationEntity> LocaleLanguageLocations { get; set; }
+
+    /// <summary>
+    /// Keyless projection for fn_app_config_select_key_values
+    /// </summary>
+    public DbSet<AppConfigKeyValueEntity> AppConfigKeyValues { get; set; }
+
+    /// <summary>
+    /// Partner/site/category usage pricing model mappings
+    /// Table: [partner_usage_pricing_model]
+    /// </summary>
+    public DbSet<PartnerUsagePricingModelEntity> PartnerUsagePricingModels { get; set; }
+
+    /// <summary>
+    /// Partner/site/category product platform mappings
+    /// Table: [partner_product_platform]
+    /// </summary>
+    public DbSet<PartnerProductPlatformEntity> PartnerProductPlatforms { get; set; }
+
+    /// <summary>
+    /// Partner/site/category retention model mappings
+    /// Table: [partner_retention_model]
+    /// </summary>
+    public DbSet<PartnerRetentionModelEntity> PartnerRetentionModels { get; set; }
 
     // ──────────────────────────────────────────────────────────────────────────────────────
     // Junction and extension tables
@@ -130,6 +171,29 @@ public class CartOrderDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+
+        modelBuilder
+            .Entity<ProductLicenseCategoryEntity>()
+            .HasKey(x => new { x.ProductId, x.LicenseCategoryId });
+
+        modelBuilder
+            .Entity<AppConfigKeyValueEntity>()
+            .HasNoKey()
+            .ToView(null);
+
+        modelBuilder
+            .Entity<PartnerUsagePricingModelEntity>()
+            .HasNoKey()
+            .ToView(null);
+
+        modelBuilder
+            .Entity<PartnerProductPlatformEntity>()
+            .HasNoKey()
+            .ToView(null);
+
+        modelBuilder
+            .Entity<PartnerRetentionModelEntity>()
+            .HasKey(x => new { x.PartnerId, x.SiteId, x.LicenseCategoryId });
 
         // ──────────────────────────────────────────────────────────────────────────────────────
         // CartOrder → Currency (Many-to-One)

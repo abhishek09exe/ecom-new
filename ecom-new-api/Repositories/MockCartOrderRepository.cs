@@ -67,6 +67,58 @@ public sealed class MockCartOrderRepository : ICartOrderRepository
     }
 
     /// <summary>
+    /// SQL Section 1.1 mock lookup by vendor order code.
+    /// Returns only cart_order_id and currency_id from the in-memory store.
+    /// </summary>
+    public Task<CartOrderLookupResponse?> GetCartLookupByVendorOrderCodeAsync(
+        string vendorOrderCode,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(vendorOrderCode))
+        {
+            return Task.FromResult<CartOrderLookupResponse?>(null);
+        }
+
+        if (!_store.TryGetValue(vendorOrderCode, out var order))
+        {
+            return Task.FromResult<CartOrderLookupResponse?>(null);
+        }
+
+        return Task.FromResult<CartOrderLookupResponse?>(new CartOrderLookupResponse
+        {
+            CartOrderId = order.CartOrderId,
+            CurrencyId = order.CurrencyId
+        });
+    }
+
+    /// <summary>
+    /// SQL Section 1.2 mock lookup by cart_order_id.
+    /// Returns only locale, site_id, and partner_id from the in-memory store.
+    /// </summary>
+    public Task<CartOrderContextLookupResponse?> GetCartContextByCartOrderIdAsync(
+        int cartOrderId,
+        CancellationToken ct = default)
+    {
+        if (cartOrderId <= 0)
+        {
+            return Task.FromResult<CartOrderContextLookupResponse?>(null);
+        }
+
+        var order = _store.Values.FirstOrDefault(x => x.CartOrderId == cartOrderId);
+        if (order is null)
+        {
+            return Task.FromResult<CartOrderContextLookupResponse?>(null);
+        }
+
+        return Task.FromResult<CartOrderContextLookupResponse?>(new CartOrderContextLookupResponse
+        {
+            Locale = order.Locale,
+            SiteId = order.SiteId,
+            PartnerId = null
+        });
+    }
+
+    /// <summary>
     /// Mock: Get partner entity — returns null (no partners in mock)
     /// </summary>
     public Task<PartnerEntity?> GetPartnerByIdAsync(
@@ -205,6 +257,24 @@ public sealed class MockCartOrderRepository : ICartOrderRepository
     }
 
     /// <summary>
+    /// Mock: Get license category lookup by name.
+    /// </summary>
+    public Task<Dictionary<string, int>> GetLicenseCategoryIdLookupByNameAsync(
+        CancellationToken ct = default)
+    {
+        var lookup = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["SOHO"] = 1,
+            ["SMB"] = 2,
+            ["ENT"] = 3,
+            ["OTSF"] = 4,
+            ["CBEP"] = 5
+        };
+
+        return Task.FromResult(lookup);
+    }
+
+    /// <summary>
     /// Mock: Get license by keycode — returns mock license with all profile data
     /// </summary>
     public Task<LicenseEntity?> GetLicenseByKeycodeAsync(
@@ -338,6 +408,17 @@ public sealed class MockCartOrderRepository : ICartOrderRepository
         return Task.FromResult<int?>(billingModelId > 0 ? billingModelId : null);
     }
 
+    /// <inheritdoc/>
+    /// Mock: Resolve existing license billing model from license_attribute_license by license ID.
+    public Task<int?> GetLicenseAttributeLicenseValueAsync(
+        int licenseId,
+        CancellationToken cancellationToken = default)
+    {
+        // Mock: use a deterministic monthly model value for valid IDs
+        // to exercise 1.7/1.7.1 conversion paths.
+        return Task.FromResult<int?>(licenseId > 0 ? 12 : null);
+    }
+
     /// <summary>Mock implementation of location-based billing model lookup.</summary>
     public Task<(int? BillingModelId, int? LicenseAttributeId)?> GetLocationBasedBillingModelAsync(
         int productLineId,
@@ -349,12 +430,85 @@ public sealed class MockCartOrderRepository : ICartOrderRepository
         return Task.FromResult<(int?, int?)?>(null);
     }
 
+    /// <inheritdoc/>
+    public Task<bool> IsBusinessProductLineAsync(
+        int productLineId,
+        CancellationToken ct = default)
+    {
+        // Mock: treat common lines as business.
+        return Task.FromResult(productLineId is 300 or 55);
+    }
+
     /// <summary>Mock implementation of business default billing model lookup.</summary>
     public Task<(int? LicenseAttributeId, int? BillingModelId)?> GetBusinessDefaultBillingModelAsync(
         CancellationToken ct = default)
     {
         // Mock: return hardcoded business default (110 = annual)
         return Task.FromResult<(int?, int?)?>(((int?)11, (int?)110));
+    }
+
+    /// <inheritdoc/>
+    public Task<bool> IsDefaultBusinessBillingModelAsync(
+        int billingModelId,
+        CancellationToken ct = default)
+    {
+        // Mock: match the mock default billing model value.
+        return Task.FromResult(billingModelId == 110);
+    }
+
+    /// <inheritdoc/>
+    public Task<(bool Found, byte? UsagePricingModelId)> GetPartnerUsagePricingModelByCategoryAsync(
+        int partnerId,
+        string? siteId,
+        string? licenseCategoryName,
+        CancellationToken ct = default)
+    {
+        if (partnerId <= 0 || string.IsNullOrWhiteSpace(siteId) || string.IsNullOrWhiteSpace(licenseCategoryName))
+            return Task.FromResult((false, (byte?)null));
+
+        // Mock examples for deterministic behavior in tests.
+        if (string.Equals(licenseCategoryName, "OTSF", StringComparison.OrdinalIgnoreCase))
+            return Task.FromResult((true, (byte?)null)); // Exercises SQL ISNULL(...,1) branch
+
+        if (string.Equals(licenseCategoryName, "CBEP", StringComparison.OrdinalIgnoreCase))
+            return Task.FromResult((true, (byte?)1));
+
+        return Task.FromResult((false, (byte?)null));
+    }
+
+    /// <inheritdoc/>
+    public Task<(bool Found, byte? ProductPlatformId)> GetPartnerProductPlatformByCategoryAsync(
+        int partnerId,
+        string? siteId,
+        string? licenseCategoryName,
+        CancellationToken ct = default)
+    {
+        if (partnerId <= 0 || string.IsNullOrWhiteSpace(siteId) || string.IsNullOrWhiteSpace(licenseCategoryName))
+            return Task.FromResult((false, (byte?)null));
+
+        if (string.Equals(licenseCategoryName, "CBEP", StringComparison.OrdinalIgnoreCase))
+            return Task.FromResult((true, (byte?)null)); // exercises ISNULL(...,1)
+
+        return Task.FromResult((false, (byte?)null));
+    }
+
+    /// <inheritdoc/>
+    public Task<(bool Found, byte? RetentionModelId)> GetPartnerRetentionModelByCategoryAsync(
+        int partnerId,
+        string? siteId,
+        string? licenseCategoryName,
+        CancellationToken ct = default)
+    {
+        if (partnerId <= 0 || string.IsNullOrWhiteSpace(siteId) || string.IsNullOrWhiteSpace(licenseCategoryName))
+            return Task.FromResult((false, (byte?)null));
+
+        if (string.Equals(licenseCategoryName, "OTSF", StringComparison.OrdinalIgnoreCase))
+            return Task.FromResult((true, (byte?)null)); // exercises ISNULL(...,1)
+
+        if (string.Equals(licenseCategoryName, "CBSB", StringComparison.OrdinalIgnoreCase))
+            return Task.FromResult((true, (byte?)1));
+
+        return Task.FromResult((false, (byte?)null));
     }
 
     /// <summary>Mock implementation of storage GB calculation.</summary>
@@ -497,6 +651,15 @@ public sealed class MockCartOrderRepository : ICartOrderRepository
         string vendorOrderCode, CancellationToken ct = default)
     {
         _store.TryGetValue(vendorOrderCode, out var order);
+        return Task.FromResult(order);
+    }
+
+    /// <inheritdoc/>
+    public Task<CartOrderResponse?> SelectCartOrderByIdAsync(
+        int cartOrderId,
+        CancellationToken ct = default)
+    {
+        var order = _store.Values.FirstOrDefault(x => x.CartOrderId == cartOrderId);
         return Task.FromResult(order);
     }
 
