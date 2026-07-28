@@ -17,4 +17,11 @@ public interface ICartOrderService
     /// </summary>
     Task<ServiceResult<CartOrderResponse>> CreateCartOrderAsync(
         CartOrderCreateRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the full cart aggregate for the given vendor_order_code.
+    /// Maps to usp_cart_select_cart_order + usp_cart_select_cart_order_item.
+    /// </summary>
+    Task<ServiceResult<CartOrderResponse>> GetCartOrderAsync(
+        string vendorOrderCode, CancellationToken ct = default);
 }

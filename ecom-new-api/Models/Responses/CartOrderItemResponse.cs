@@ -205,5 +205,31 @@ public sealed class CartOrderItemResponse
 
     /// <summary>cart_order_item_json.cart_order_item_json — raw item-level extension JSON.</summary>
     public string? CartOrderItemJson { get; init; }
+
+    // ── Legacy fields (required for frontend compatibility) ───────────────────
+
+    /// <summary>The message_key for this order (same for all items in the order).</summary>
+    public string? MessageKey { get; init; }
+
+    /// <summary>product_seat.seats — alias for legacy license_seats contract.</summary>
+    public int? LicenseSeats { get; init; }
+
+    // Computed sub-totals (unit price × quantity)
+    public decimal? SubTotalListAmount { get; init; }
+    public decimal? SubTotalAmount { get; init; }
+    public decimal? SubTotalAmountPreVat { get; init; }
+    public decimal? SubTotalEquivalentYearPrice { get; init; }
+    public decimal? EstimatedMonthlyPrice { get; init; }   // always null in current impl
+
+    // Formatted currency strings (e.g. "$24.50")
+    public string? EquivalentYearPriceFmt { get; init; }
+    public string? ListPriceFmt { get; init; }
+    public string? UnitPriceFmt { get; init; }
+    public string? UnitPricePreVatFmt { get; init; }
+    public string? UsagePriceFmt { get; init; }
+    public string? SubTotalEquivalentYearPriceFmt { get; init; }
+    public string? SubTotalListAmountFmt { get; init; }
+    public string? SubTotalAmountFmt { get; init; }
+    public string? SubTotalAmountPreVatFmt { get; init; }
 }
 

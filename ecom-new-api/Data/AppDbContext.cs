@@ -30,6 +30,18 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<PartnerConfigurationPartner> PartnerConfigurationPartners => Set<PartnerConfigurationPartner>();
     public DbSet<CartOrderItemJson> CartOrderItemJsons => Set<CartOrderItemJson>();
     public DbSet<CartOrderItemLicense> CartOrderItemLicenses => Set<CartOrderItemLicense>();
+    public DbSet<ProductType> ProductTypes => Set<ProductType>();
+    public DbSet<ProductFamily> ProductFamilies => Set<ProductFamily>();
+    public DbSet<LicenseKeycodeType> LicenseKeycodeTypes => Set<LicenseKeycodeType>();
+    public DbSet<LicenseAttributeLicenseValue> LicenseAttributeLicenseValues => Set<LicenseAttributeLicenseValue>();
+    public DbSet<ProductLicenseCategory> ProductLicenseCategories => Set<ProductLicenseCategory>();
+    public DbSet<ProductYears> ProductYears => Set<ProductYears>();
+    public DbSet<ProductSeat> ProductSeats => Set<ProductSeat>();
+    public DbSet<ProductLine> ProductLines => Set<ProductLine>();
+    public DbSet<ProductLineProduct> ProductLineProducts => Set<ProductLineProduct>();
+    public DbSet<CartOrderItemJsonLog> CartOrderItemJsonLogs => Set<CartOrderItemJsonLog>();
+    public DbSet<PartnerAccount> PartnerAccounts => Set<PartnerAccount>();
+    public DbSet<Account> Accounts => Set<Account>();
 
     protected override void OnModelCreating(ModelBuilder m)
     {
@@ -267,10 +279,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             e.Property(x => x.CartOrderId).HasColumnName("cart_order_id");
             e.Property(x => x.RoutingAction).HasColumnName("routing_action").HasMaxLength(50).IsRequired();
             e.Property(x => x.InsertDate).HasColumnName("insert_date");
-            e.HasOne(x => x.CartOrder).WithMany().HasForeignKey(x => x.CartOrderId);
+            e.HasOne(x => x.CartOrder).WithMany(o => o.Routes).HasForeignKey(x => x.CartOrderId);
         });
 
-        // ── cart_order_message (G5) ───────────────────────────────────────────
         m.Entity<CartOrderMessage>(e =>
         {
             e.ToTable("cart_order_message");
@@ -283,7 +294,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             e.Property(x => x.StatusId).HasColumnName("status_id").HasDefaultValue((byte)1);
             e.Property(x => x.MessageCampaignId).HasColumnName("message_campaign_id");
             e.Property(x => x.MessageCampaignPlatform).HasColumnName("message_campaign_platform").HasMaxLength(50);
-            e.HasOne(x => x.CartOrder).WithMany().HasForeignKey(x => x.CartOrderId);
+            e.HasOne(x => x.CartOrder).WithMany(o => o.Messages).HasForeignKey(x => x.CartOrderId);
         });
 
         // ── license_key (G5 lookup — read-only) ──────────────────────────────
@@ -334,7 +345,184 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             e.Property(x => x.ModifiedDate).HasColumnName("modified_date");
             e.Property(x => x.ModifiedBy).HasColumnName("modified_by").HasMaxLength(100).IsRequired();
             e.Property(x => x.CartOrderStatusId).HasColumnName("cart_order_status_id").HasDefaultValue((byte)1);
-            e.HasOne(x => x.CartOrderItem).WithMany().HasForeignKey(x => x.CartOrderItemId);
+            e.HasOne(x => x.CartOrderItem).WithOne(i => i.ItemLicense)
+             .HasForeignKey<CartOrderItemLicense>(x => x.CartOrderItemId);
+        });
+
+        // ── cart_order_item_json — update to one-to-one navigation ────────────
+        // (already registered above; re-configure the inverse navigation here)
+        m.Entity<CartOrderItemJson>(e =>
+        {
+            e.HasOne(x => x.CartOrderItem).WithOne(i => i.ItemJson)
+             .HasForeignKey<CartOrderItemJson>(x => x.CartOrderItemId);
+        });
+
+        // ── product_type ──────────────────────────────────────────────────────
+        m.Entity<ProductType>(e =>
+        {
+            e.ToTable("product_type");
+            e.HasKey(x => x.ProductTypeId);
+            e.Property(x => x.ProductTypeId).HasColumnName("product_type_id").ValueGeneratedOnAdd();
+            e.Property(x => x.ProductTypeDescription).HasColumnName("product_type_description").HasMaxLength(50);
+            e.Property(x => x.InsertDate).HasColumnName("insert_date");
+            e.Property(x => x.InsertBy).HasColumnName("insert_by").HasMaxLength(200).IsRequired();
+            e.Property(x => x.ModifiedDate).HasColumnName("modified_date");
+            e.Property(x => x.ModifiedBy).HasColumnName("modified_by").HasMaxLength(200).IsRequired();
+        });
+
+        // ── product_family ────────────────────────────────────────────────────
+        m.Entity<ProductFamily>(e =>
+        {
+            e.ToTable("product_family");
+            e.HasKey(x => x.ProductFamilyId);
+            e.Property(x => x.ProductFamilyId).HasColumnName("product_family_id").ValueGeneratedOnAdd();
+            e.Property(x => x.ProductFamilyDescription).HasColumnName("product_family_description").HasMaxLength(50).IsRequired();
+            e.Property(x => x.ProductFamilyPrefix).HasColumnName("product_family_prefix").HasMaxLength(2).IsFixedLength();
+            e.Property(x => x.InsertDate).HasColumnName("insert_date");
+            e.Property(x => x.InsertBy).HasColumnName("insert_by").HasMaxLength(200).IsRequired();
+            e.Property(x => x.ModifiedDate).HasColumnName("modified_date");
+            e.Property(x => x.ModifiedBy).HasColumnName("modified_by").HasMaxLength(200).IsRequired();
+        });
+
+        // ── license_keycode_type ──────────────────────────────────────────────
+        m.Entity<LicenseKeycodeType>(e =>
+        {
+            e.ToTable("license_keycode_type");
+            e.HasKey(x => x.LicenseKeycodeTypeId);
+            e.Property(x => x.LicenseKeycodeTypeId).HasColumnName("license_keycode_type_id").ValueGeneratedOnAdd();
+            e.Property(x => x.LicenseKeycodeTypeDescription).HasColumnName("license_keycode_type_description").HasMaxLength(50).IsRequired();
+        });
+
+        // ── license_attribute_license_value ───────────────────────────────────
+        // Note: PK column is also named 'license_attribute_license_value' in the DB.
+        m.Entity<LicenseAttributeLicenseValue>(e =>
+        {
+            e.ToTable("license_attribute_license_value");
+            e.HasKey(x => x.LicenseAttributeLicenseValueId);
+            e.Property(x => x.LicenseAttributeLicenseValueId).HasColumnName("license_attribute_license_value");
+            e.Property(x => x.LicenseAttributeLicenseValueDescription)
+             .HasColumnName("license_attribute_license_value_description").HasMaxLength(50).IsRequired();
+        });
+
+        // ── product_license_category (join table) ─────────────────────────────
+        m.Entity<ProductLicenseCategory>(e =>
+        {
+            e.ToTable("product_license_category");
+            e.HasKey(x => new { x.LicenseCategoryId, x.ProductId });
+            e.Property(x => x.ProductId).HasColumnName("product_id");
+            e.Property(x => x.LicenseCategoryId).HasColumnName("license_category_id");
+            e.Property(x => x.CurrentLicenseCategoryId).HasColumnName("current_license_category_id");
+            e.HasOne(x => x.Product).WithMany(p => p.ProductLicenseCategories).HasForeignKey(x => x.ProductId);
+            e.HasOne(x => x.LicenseCategory).WithMany().HasForeignKey(x => x.LicenseCategoryId);
+        });
+
+        // ── product_years (composite PK) ──────────────────────────────────────
+        m.Entity<ProductYears>(e =>
+        {
+            e.ToTable("product_years");
+            e.HasKey(x => new { x.ProductId, x.Years });
+            e.Property(x => x.ProductId).HasColumnName("product_id");
+            e.Property(x => x.Years).HasColumnName("years");
+            e.Property(x => x.UpgradeMonths).HasColumnName("upgrade_months");
+            e.Property(x => x.UpgradeDays).HasColumnName("upgrade_days");
+            e.HasOne(x => x.Product).WithMany(p => p.ProductYears).HasForeignKey(x => x.ProductId);
+        });
+
+        // ── product_seat ──────────────────────────────────────────────────────
+        m.Entity<ProductSeat>(e =>
+        {
+            e.ToTable("product_seat");
+            e.HasKey(x => x.ProductSeatId);
+            e.Property(x => x.ProductSeatId).HasColumnName("product_seat_id").ValueGeneratedOnAdd();
+            e.Property(x => x.ProductId).HasColumnName("product_id");
+            e.Property(x => x.Seats).HasColumnName("seats");
+            e.Property(x => x.InsertDate).HasColumnName("insert_date");
+            e.Property(x => x.InsertBy).HasColumnName("insert_by").HasMaxLength(200).IsRequired();
+            e.Property(x => x.ModifiedDate).HasColumnName("modified_date");
+            e.Property(x => x.ModifiedBy).HasColumnName("modified_by").HasMaxLength(200).IsRequired();
+            e.Property(x => x.CurrentSeats).HasColumnName("current_seats");
+            e.HasOne(x => x.Product).WithMany(p => p.ProductSeats).HasForeignKey(x => x.ProductId);
+        });
+
+        // ── product_line ──────────────────────────────────────────────────────
+        m.Entity<ProductLine>(e =>
+        {
+            e.ToTable("product_line");
+            e.HasKey(x => x.ProductLineId);
+            e.Property(x => x.ProductLineId).HasColumnName("product_line_id").ValueGeneratedOnAdd();
+            e.Property(x => x.ProductLineDescription).HasColumnName("product_line_description").HasMaxLength(40).IsRequired();
+            e.Property(x => x.ProductLinePrefix).HasColumnName("product_line_prefix").HasMaxLength(2).IsFixedLength().IsRequired();
+            e.Property(x => x.RootProductId).HasColumnName("root_product_id");
+            e.Property(x => x.InsertDate).HasColumnName("insert_date");
+            e.Property(x => x.InsertBy).HasColumnName("insert_by").HasMaxLength(200).IsRequired();
+            e.Property(x => x.ModifiedDate).HasColumnName("modified_date");
+            e.Property(x => x.ModifiedBy).HasColumnName("modified_by").HasMaxLength(200).IsRequired();
+            e.Property(x => x.Status).HasColumnName("status");
+            e.Property(x => x.ProductLineCartType).HasColumnName("product_line_cart_type").HasMaxLength(20);
+        });
+
+        // ── product_line_product (join table) ─────────────────────────────────
+        m.Entity<ProductLineProduct>(e =>
+        {
+            e.ToTable("product_line_product");
+            e.HasKey(x => new { x.ProductId, x.ProductLineId });
+            e.Property(x => x.ProductLineId).HasColumnName("product_line_id");
+            e.Property(x => x.ProductId).HasColumnName("product_id");
+            e.HasOne(x => x.Product).WithMany(p => p.ProductLineProducts).HasForeignKey(x => x.ProductId);
+            e.HasOne(x => x.ProductLine).WithMany().HasForeignKey(x => x.ProductLineId);
+        });
+
+        // ── cart_order_item_json_log (G10) ────────────────────────────────────
+        m.Entity<CartOrderItemJsonLog>(e =>
+        {
+            e.ToTable("cart_order_item_json_log");
+            e.HasKey(x => x.CartOrderItemJsonLogId);
+            e.Property(x => x.CartOrderItemJsonLogId).HasColumnName("cart_order_item_json_log_id").ValueGeneratedOnAdd();
+            e.Property(x => x.CartOrderId).HasColumnName("cart_order_id");
+            e.Property(x => x.ItemJson).HasColumnName("item_json");
+            e.Property(x => x.BundleJson).HasColumnName("bundle_json");
+            e.Property(x => x.InsertDate).HasColumnName("insert_date");
+            e.HasOne(x => x.CartOrder).WithMany().HasForeignKey(x => x.CartOrderId);
+        });
+
+        // ── product — add FK navigations to new lookup tables ────────────────
+        m.Entity<Product>(e =>
+        {
+            e.HasOne(x => x.ProductType).WithMany()
+             .HasForeignKey(x => x.ProductTypeId).IsRequired();
+            e.HasOne(x => x.ProductFamily).WithMany()
+             .HasForeignKey(x => x.ProductFamilyId);
+            e.HasOne(x => x.LicenseKeycodeType).WithMany()
+             .HasForeignKey(x => x.LicenseKeycodeTypeId);
+        });
+
+        // ── cart_order_item — FK to license_attribute_license_value ──────────
+        m.Entity<CartOrderItem>(e =>
+        {
+            e.HasOne(x => x.LicenseAttributeValue).WithMany()
+             .HasForeignKey(x => x.LicenseAttributeLicenseValue);
+        });
+
+        // ── NextIdResult — keyless projection for EXEC usp_next_id @Type=3 ──
+        m.Entity<NextIdResult>().HasNoKey();
+
+        // ── partner_account — read-only for partner_account_id lookup ─────────
+        m.Entity<PartnerAccount>(e =>
+        {
+            e.ToTable("partner_account");
+            e.HasKey(x => x.PartnerAccountId);
+            e.Property(x => x.PartnerAccountId).HasColumnName("partner_account_id");
+            e.Property(x => x.PartnerId).HasColumnName("partner_id");
+            e.Property(x => x.AccountId).HasColumnName("account_id");
+        });
+
+        // ── account — read-only for account_user_name lookup ─────────────────
+        m.Entity<Account>(e =>
+        {
+            e.ToTable("account");
+            e.HasKey(x => x.AccountId);
+            e.Property(x => x.AccountId).HasColumnName("account_id");
+            e.Property(x => x.AccountUserName).HasColumnName("account_user_name").HasMaxLength(100);
         });
     }
 }

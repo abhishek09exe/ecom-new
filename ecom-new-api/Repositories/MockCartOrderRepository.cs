@@ -103,7 +103,8 @@ public sealed class MockCartOrderRepository : ICartOrderRepository
                 OrderItemOfferAmount = null,
                 EquivalentYearPrice = null,
                 ProductPricingLevelId = item.ProductPricingLevelId
-            }).ToList()
+            }).GroupBy(item => (item.CartItemBundleId ?? 0).ToString())
+              .ToDictionary(g => g.Key, g => g.ToList())
         };
 
         _store[vendorOrderCode] = response;

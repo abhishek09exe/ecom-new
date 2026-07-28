@@ -52,4 +52,13 @@ public sealed class CartOrderItem
 
     /// <summary>Product lookup — gives ProductDescription on the response.</summary>
     public Product? Product { get; set; }
+
+    /// <summary>cart_order_item_license row — provides Keycode on the response.</summary>
+    public CartOrderItemLicense? ItemLicense { get; set; }
+
+    /// <summary>cart_order_item_json row — provides vault, retention, platform fields.</summary>
+    public CartOrderItemJson? ItemJson { get; set; }
+
+    /// <summary>license_attribute_license_value lookup — provides description on the response.</summary>
+    public LicenseAttributeLicenseValue? LicenseAttributeValue { get; set; }
 }

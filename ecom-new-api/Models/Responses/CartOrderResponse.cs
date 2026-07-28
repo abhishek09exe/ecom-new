@@ -82,8 +82,35 @@ public sealed class CartOrderResponse
     public string? CartJson { get; init; }
 
     // ── Hydrated line items (from usp_cart_select_cart_order_item) ─────────────
+    // Keyed by cart_item_bundle_id (as string) to match the legacy contract:
+    //   "items": { "1": [ {...}, {...} ] }
+    // Frontend JS uses items["1"] to access items in a bundle.
+    public Dictionary<string, List<CartOrderItemResponse>> Items { get; init; } = [];
 
-    /// <summary>Line items populated from usp_cart_select_cart_order_item re-read.</summary>
-    public List<CartOrderItemResponse> Items { get; init; } = [];
+    // ── Route (from cart_order_route JOIN cart_order_message) ─────────────────
+    // Matches legacy: "route": { "route": "https://www.webroot.com/us/en/cart?..." }
+    public CartOrderRouteInfo? Route { get; init; }
+
+    // ── Legacy fields required by frontend ───────────────────────────────
+    public bool IsExternal { get; init; }           // always false
+    public bool UsePaymentech { get; init; }         // always true
+    public object? Customers { get; init; }          // always null in new impl
+    public object? Cybersource { get; init; }        // always null in new impl
+    public string? SafeAccountEmail { get; init; }   // always null in new impl
+
+    // Formatted currency strings
+    public string? SubTotalAmountFmt { get; init; }
+    public string? TaxAmountFmt { get; init; }
+    public string? TotalAmountFmt { get; init; }
+    public string? OfferAmountFmt { get; init; }
+}
+
+/// <summary>
+/// Legacy-compatible route wrapper returned in cart-order responses.
+/// "route": { "route": "https://www.webroot.com/us/en/cart?routing_action=billing&key=..." }
+/// </summary>
+public sealed class CartOrderRouteInfo
+{
+    public string? Route { get; init; }
 }
 

@@ -51,5 +51,5 @@ public sealed class CartOrder
     public CartOrderStatus CartOrderStatus { get; set; } = default!;
     public ICollection<CartOrderItem> Items { get; set; } = [];
     public CartOrderPartner? CartOrderPartner { get; set; }
-    public CartJson? CartJson { get; set; }
-}
+    public CartJson? CartJson { get; set; }    public ICollection<CartOrderRoute> Routes { get; set; } = [];
+    public ICollection<CartOrderMessage> Messages { get; set; } = [];}

@@ -73,7 +73,21 @@ public sealed class CartOrderService : ICartOrderService
 
         return ServiceResult<CartOrderResponse>.Ok(order);
     }
+    // ── GET /cart/cart-orders/{vendorOrderCode} ────────────────────────────────────
 
+    public async Task<ServiceResult<CartOrderResponse>> GetCartOrderAsync(
+        string vendorOrderCode, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(vendorOrderCode))
+            return ServiceResult<CartOrderResponse>.Invalid(["vendor_order_code is required"]);
+
+        var order = await _repo.SelectCartOrderAsync(vendorOrderCode, ct);
+        if (order is null)
+            return ServiceResult<CartOrderResponse>.NotFound(
+                $"Cart order '{vendorOrderCode}' not found");
+
+        return ServiceResult<CartOrderResponse>.Ok(order);
+    }
     // ── Validation ──────────────────────────────────────────────────────────────
 
     private List<string> ValidateCreateRequest(CartOrderCreateRequest r)
@@ -95,19 +109,21 @@ public sealed class CartOrderService : ICartOrderService
             errors.Add("currency_code must be a valid ISO 4217 code (3 characters)");
         // TODO: REPLACE WITH ACTUAL — validate against currency table in DB
 
-        if (!string.IsNullOrWhiteSpace(r.VendorOrderCode) && r.VendorOrderCode.Trim().Length == 0)
+        // `!IsNullOrWhiteSpace` + `Trim().Length == 0` is a dead branch — rewritten
+        // to correctly catch an explicitly-blank string such as "" or "   ".
+        if (r.VendorOrderCode is not null && string.IsNullOrWhiteSpace(r.VendorOrderCode))
             errors.Add("vendor_order_code must not be blank if provided");
 
         if (r.MessageCampaignId.HasValue && r.MessageCampaignId <= 0)
             errors.Add("message_campaign_id must be a positive integer if provided");
 
-        if (!string.IsNullOrWhiteSpace(r.MessageCampaignPlatform) && r.MessageCampaignPlatform.Trim().Length == 0)
+        if (r.MessageCampaignPlatform is not null && string.IsNullOrWhiteSpace(r.MessageCampaignPlatform))
             errors.Add("message_campaign_platform must not be blank if provided");
 
         if (!string.IsNullOrWhiteSpace(r.PartnerKey) && !Guid.TryParse(r.PartnerKey, out _))
             errors.Add("partner_key must be a valid UUID if provided");
 
-        if (!string.IsNullOrWhiteSpace(r.AccountUserName) && r.AccountUserName.Trim().Length == 0)
+        if (r.AccountUserName is not null && string.IsNullOrWhiteSpace(r.AccountUserName))
             errors.Add("account_user_name must not be blank if provided");
 
         if (!string.IsNullOrWhiteSpace(r.UrlLink) &&

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using ecom_new_api.Data;
 using ecom_new_api.Repositories;
 using ecom_new_api.Services;
@@ -6,7 +7,14 @@ using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 
 // ── MVC / Swagger ───────────────────────────────────────────────────────────────
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(opts =>
+    {
+        // Match legacy snake_case response contract (vendor_order_code, site_id, …).
+        // Also makes request deserialization accept snake_case body fields.
+        opts.JsonSerializerOptions.PropertyNamingPolicy        = JsonNamingPolicy.SnakeCaseLower;
+        opts.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
+    });
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -17,7 +25,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("CartDb")));
 
 // ── Repositories ────────────────────────────────────────────────────────────────
-builder.Services.AddScoped<ICartOrderRepository, EfCartOrderRepository>();
+builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
 // builder.Services.AddScoped<ICartOrderRepository, MockCartOrderRepository>();
 
 // ── Services ────────────────────────────────────────────────────────────────────

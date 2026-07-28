@@ -40,7 +40,7 @@ public sealed class CartOrdersController : ControllerBase
     /// </summary>
     [HttpPost("cart-orders")]
     [ProducesResponseType(typeof(ApiResponse<CartOrderResponse>), StatusCodes.Status201Created)]
-    [ProducesResponseType(typeof(ApiResponse<CartOrderResponse>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResponse<CartOrderResponse>), StatusCodes.Status422UnprocessableEntity)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> CreateCartOrder(
@@ -61,6 +61,23 @@ public sealed class CartOrdersController : ControllerBase
         return MapResult(result, created: true);
     }
 
+    // ── GET /cart/cart-orders/{vendorOrderCode} ─────────────────────────────────
+
+    /// <summary>
+    /// Returns the full cart aggregate for an existing order.
+    /// Maps to usp_cart_select_cart_order + usp_cart_select_cart_order_item.
+    /// </summary>
+    [HttpGet("cart-orders/{vendorOrderCode}")]
+    [ProducesResponseType(typeof(ApiResponse<CartOrderResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<CartOrderResponse>), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetCartOrder(
+        [FromRoute] string vendorOrderCode,
+        CancellationToken ct)
+    {
+        var result = await _service.GetCartOrderAsync(vendorOrderCode, ct);
+        return MapResult(result);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
     private IActionResult MapResult<T>(ServiceResult<T> result, bool created = false)
@@ -72,7 +89,7 @@ public sealed class CartOrdersController : ControllerBase
                 : Ok(ApiResponse<T>.Success(result.Data!)),
 
             ServiceResultKind.ValidationError =>
-                BadRequest(ApiResponse<T>.ValidationFailure(result.ValidationErrors)),
+                UnprocessableEntity(ApiResponse<T>.ValidationFailure(result.ValidationErrors)),
 
             ServiceResultKind.NotFound =>
                 NotFound(ApiResponse<T>.Failure(result.ErrorMessage ?? "Not found")),

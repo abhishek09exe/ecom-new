@@ -13,4 +13,27 @@ public sealed class Product
     public int? CdProductId { get; set; }
     public decimal? RetailPrice { get; set; }
     public string? Basename { get; set; }
+
+    // ── Navigation properties ──────────────────────────────────────────────────
+
+    /// <summary>product.product_type_id → product_type</summary>
+    public ProductType? ProductType { get; set; }
+
+    /// <summary>product.product_family_id → product_family</summary>
+    public ProductFamily? ProductFamily { get; set; }
+
+    /// <summary>product.license_keycode_type_id → license_keycode_type</summary>
+    public LicenseKeycodeType? LicenseKeycodeType { get; set; }
+
+    /// <summary>product_license_category join rows for this product (→ license_category)</summary>
+    public ICollection<ProductLicenseCategory> ProductLicenseCategories { get; set; } = [];
+
+    /// <summary>product_years rows for this product (one-to-many; usually one row)</summary>
+    public ICollection<ProductYears> ProductYears { get; set; } = [];
+
+    /// <summary>product_seat rows for this product (usually one row)</summary>
+    public ICollection<ProductSeat> ProductSeats { get; set; } = [];
+
+    /// <summary>product_line_product join rows for this product (→ product_line)</summary>
+    public ICollection<ProductLineProduct> ProductLineProducts { get; set; } = [];
 }
