@@ -39,8 +39,9 @@ public sealed class CartOrdersController : ControllerBase
     /// Called by the frontend JS when a user clicks "Add to Cart."
     /// </summary>
     [HttpPost("cart-orders")]
-    [ProducesResponseType(typeof(ApiResponse<CartOrderResponse>), StatusCodes.Status201Created)]
-    [ProducesResponseType(typeof(ApiResponse<CartOrderResponse>), StatusCodes.Status422UnprocessableEntity)]
+    [ProducesResponseType(typeof(CartOrderResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(CartOrderResponse), StatusCodes.Status422UnprocessableEntity)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> CreateCartOrder(
@@ -58,23 +59,69 @@ public sealed class CartOrdersController : ControllerBase
         // request.TrxRc = (string?)HttpContext.Items["TrxRc"];
 
         var result = await _service.CreateCartOrderAsync(request, ct);
-        return MapResult(result, created: true);
+
+        return result.Kind switch
+        {
+            ServiceResultKind.Ok =>
+                StatusCode(StatusCodes.Status201Created, result.Data!),
+
+            ServiceResultKind.ValidationError =>
+                BadRequest(new { errors = result.ValidationErrors }),
+
+            _ => StatusCode(StatusCodes.Status500InternalServerError,
+                    new { error = result.ErrorMessage ?? "An unexpected error occurred" })
+        };
     }
 
-    // ── GET /cart/cart-orders/{vendorOrderCode} ─────────────────────────────────
+    // ── GET /license-options ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Returns the full cart aggregate for an existing order.
-    /// Maps to usp_cart_select_cart_order + usp_cart_select_cart_order_item.
+    /// Fetches license + available products for a keycode.
+    /// First call made by the interstitial cart page on load.
     /// </summary>
-    [HttpGet("cart-orders/{vendorOrderCode}")]
-    [ProducesResponseType(typeof(ApiResponse<CartOrderResponse>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ApiResponse<CartOrderResponse>), StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetCartOrder(
-        [FromRoute] string vendorOrderCode,
+    [HttpGet("/license-options")]
+    [ProducesResponseType(typeof(ApiResponse<LicenseOptionsResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<LicenseOptionsResponse>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResponse<LicenseOptionsResponse>), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetLicenseOptions(
+        [FromQuery] string keycode,
         CancellationToken ct)
     {
-        var result = await _service.GetCartOrderAsync(vendorOrderCode, ct);
+        var result = await _service.GetLicenseOptionsAsync(keycode, ct);
+        return MapResult(result);
+    }
+
+    // ── GET /configure ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns renewal product options for a license.
+    /// Drives the RENEW tab on the configurator page.
+    /// </summary>
+    [HttpGet("/configure")]
+    [ProducesResponseType(typeof(ApiResponse<ConfigureResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<ConfigureResponse>), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetConfigure(
+        [FromQuery] string keycode,
+        CancellationToken ct)
+    {
+        var result = await _service.GetConfigureAsync(keycode, ct);
+        return MapResult(result);
+    }
+
+    // ── GET /upgrade ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns upgrade product options for a license.
+    /// Drives the upgrade tab on the configurator page.
+    /// </summary>
+    [HttpGet("/upgrade")]
+    [ProducesResponseType(typeof(ApiResponse<UpgradeResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<UpgradeResponse>), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetUpgrade(
+        [FromQuery] string keycode,
+        CancellationToken ct)
+    {
+        var result = await _service.GetUpgradeAsync(keycode, ct);
         return MapResult(result);
     }
 
@@ -89,7 +136,7 @@ public sealed class CartOrdersController : ControllerBase
                 : Ok(ApiResponse<T>.Success(result.Data!)),
 
             ServiceResultKind.ValidationError =>
-                UnprocessableEntity(ApiResponse<T>.ValidationFailure(result.ValidationErrors)),
+                BadRequest(ApiResponse<T>.ValidationFailure(result.ValidationErrors)),
 
             ServiceResultKind.NotFound =>
                 NotFound(ApiResponse<T>.Failure(result.ErrorMessage ?? "Not found")),

@@ -1,64 +1,90 @@
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace ecom_new_api.Data.Entities;
 
-/// <summary>
-/// Maps to the cart_order_item table.
-/// One row per line item in an order.
-/// Columns verified against real QA DB schema.
-/// </summary>
+[Table("cart_order_item")]
 public sealed class CartOrderItem
 {
+    [Key]
+    [Column("cart_order_item_id")]
     public int CartOrderItemId { get; set; }
+
+    [Column("cart_order_id")]
     public int CartOrderId { get; set; }
-    public int InvoiceItemInProcessId { get; set; }       // NOT NULL DEFAULT 0
-    public int VendorId { get; set; }                     // NOT NULL DEFAULT 1
+
+    [Column("line_item")]
     public int LineItem { get; set; }
-    public int? VendorProductId { get; set; }
+
+    [Column("product_id")]
     public int ProductId { get; set; }
+
+    [Column("quantity")]
     public int Quantity { get; set; }
-    public string? OrderItemOfferCode { get; set; }
-    public decimal? OrderItemOfferAmount { get; set; }
-    public decimal ListPrice { get; set; }                // NOT NULL DEFAULT 0
-    public decimal UnitPrice { get; set; }                // NOT NULL DEFAULT 0
-    public decimal TaxItemTotal { get; set; }             // NOT NULL DEFAULT 0
-    public bool TaxExempt { get; set; }                   // NOT NULL DEFAULT 0
-    public int? ConversionProductId { get; set; }
-    public string? ProductLocale { get; set; }
-    public decimal? UnitPricePreVat { get; set; }
-    public decimal? UsagePrice { get; set; }
-    public double? Discount { get; set; }
-    public byte? CartDiscountMethodId { get; set; }
-    public int? CartDiscountId { get; set; }
-    public byte CartOrderStatusId { get; set; }           // NOT NULL DEFAULT 1
-    public int? CartOrderItemInProcessId { get; set; }
-    public DateTime? StartDate { get; set; }
-    public DateTime? ExpirationDate { get; set; }
-    public int? CartItemBundleId { get; set; }
-    public byte? ItemHierarchyId { get; set; }            // tinyint in real DB
-    public int? LicenseAttributeLicenseValue { get; set; }
-    public string? VendorOrderItemCode { get; set; }
-    public byte? OrderItemUpdateTypeId { get; set; }      // tinyint in real DB
-    public string? OpportunityLineItemId { get; set; }
-    public int? SapMaterialNumber { get; set; }
+
+    [Column("storage_gb")]
     public int? StorageGb { get; set; }
-    public DateTime InsertDate { get; set; }
-    public string? InsertBy { get; set; }
-    public DateTime ModifiedDate { get; set; }
-    public string? ModifiedBy { get; set; }
 
-    // ── Navigation properties ──────────────────────────────────────────────────
+    [Column("list_price")]
+    public decimal? ListPrice { get; set; }
 
-    /// <summary>Parent order.</summary>
-    public CartOrder CartOrder { get; set; } = default!;
+    [Column("unit_price")]
+    public decimal? UnitPrice { get; set; }
 
-    /// <summary>Product lookup — gives ProductDescription on the response.</summary>
+    [Column("unit_price_pre_vat")]
+    public decimal? UnitPricePreVat { get; set; }
+
+    [Column("tax_item_total")]
+    public decimal? TaxItemTotal { get; set; }
+
+    [Column("usage_price")]
+    public decimal? UsagePrice { get; set; }
+
+    [Column("order_item_offer_amount")]
+    public decimal? OrderItemOfferAmount { get; set; }
+
+    [Column("start_date")]
+    public DateTime? StartDate { get; set; }
+
+    [Column("expiration_date")]
+    public DateTime? ExpirationDate { get; set; }
+
+    [Column("cart_item_bundle_id")]
+    public int? CartItemBundleId { get; set; }
+
+    [Column("item_hierarchy_id")]
+    public int? ItemHierarchyId { get; set; }
+
+    [Column("license_attribute_license_value")]
+    public int? LicenseAttributeLicenseValue { get; set; }
+
+    [Column("vendor_order_item_code")]
+    [MaxLength(36)]
+    public string? VendorOrderItemCode { get; set; }
+
+    [Column("order_item_update_type_id")]
+    public int? OrderItemUpdateTypeId { get; set; }
+
+    [Column("discount")]
+    public double? Discount { get; set; }
+
+    [Column("cart_discount_method_id")]
+    public byte? CartDiscountMethodId { get; set; }
+
+    [Column("cart_discount_id")]
+    public int? CartDiscountId { get; set; }
+
+    [Column("opportunity_line_item_id")]
+    [MaxLength(18)]
+    public string? OpportunityLineItemId { get; set; }
+
+    [Column("product_locale")]
+    [MaxLength(5)]
+    public string? ProductLocale { get; set; }
+
+    // Navigation
+    public CartOrder? CartOrder { get; set; }
     public Product? Product { get; set; }
-
-    /// <summary>cart_order_item_license row — provides Keycode on the response.</summary>
-    public CartOrderItemLicense? ItemLicense { get; set; }
-
-    /// <summary>cart_order_item_json row — provides vault, retention, platform fields.</summary>
-    public CartOrderItemJson? ItemJson { get; set; }
-
-    /// <summary>license_attribute_license_value lookup — provides description on the response.</summary>
-    public LicenseAttributeLicenseValue? LicenseAttributeValue { get; set; }
+    public CartOrderItemJson? CartOrderItemJson { get; set; }
+    public CartOrderItemLicense? CartOrderItemLicense { get; set; }
 }

@@ -1,7 +1,5 @@
 namespace ecom_new_api.Models.Requests;
 
-using System.Text.Json.Serialization;
-
 /// <summary>
 /// Request body for POST /cart/cart-orders.
 /// Maps to the PHP controller's accepted payload merged with account context injected by middleware.
@@ -45,10 +43,8 @@ public sealed class CartOrderCreateRequest
     /// <summary>
     /// Keycode / message key entered by the user.
     /// If this resolves to a quote key the service must pivot to an UPDATE rather than INSERT.
-    /// Accepts both "key" (new API) and "message_key" (legacy contract).
     /// </summary>
-    [JsonPropertyName("message_key")]
-    public string? Key { get; init; }
+    public string? MessageKey { get; init; }
 
     /// <summary>Pre-applied discount identifier.</summary>
     public int? CartDiscountId { get; init; }

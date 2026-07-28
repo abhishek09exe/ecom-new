@@ -37,7 +37,7 @@ public sealed class CartOrderResponse
     public decimal? TaxAmount { get; init; }
 
     /// <summary>cart_order.sales_order_date</summary>
-    public DateTime? SalesOrderDate { get; init; }
+    public DateTime SalesOrderDate { get; init; }
 
     /// <summary>cart_order.locale (CHAR 5, e.g. "en-US")</summary>
     public string Locale { get; init; } = default!;
@@ -55,7 +55,7 @@ public sealed class CartOrderResponse
     public string? ModifiedBy { get; init; }
 
     /// <summary>cart_order.cart_order_status_id</summary>
-    public byte CartOrderStatusId { get; init; }
+    public int CartOrderStatusId { get; init; }
 
     /// <summary>cart_order.user_ip — always server-set, never client-supplied.</summary>
     public string? UserIp { get; init; }
@@ -81,36 +81,55 @@ public sealed class CartOrderResponse
     /// <summary>cart_json.cart_json — the raw extension JSON stored at order creation time.</summary>
     public string? CartJson { get; init; }
 
-    // ── Hydrated line items (from usp_cart_select_cart_order_item) ─────────────
-    // Keyed by cart_item_bundle_id (as string) to match the legacy contract:
-    //   "items": { "1": [ {...}, {...} ] }
-    // Frontend JS uses items["1"] to access items in a bundle.
-    public Dictionary<string, List<CartOrderItemResponse>> Items { get; init; } = [];
+    // ── Hydrated line items grouped by cart_item_bundle_id ─────────────────────────
 
-    // ── Route (from cart_order_route JOIN cart_order_message) ─────────────────
-    // Matches legacy: "route": { "route": "https://www.webroot.com/us/en/cart?..." }
-    public CartOrderRouteInfo? Route { get; init; }
+    /// <summary>
+    /// Items grouped by cart_item_bundle_id (key = bundle id as string).
+    /// Matches the real API response shape: { "1": [ {...}, {...} ], "2": [ {...} ] }
+    /// </summary>
+    public Dictionary<string, List<CartOrderItemResponse>> Items { get; set; } = new();
 
-    // ── Legacy fields required by frontend ───────────────────────────────
-    public bool IsExternal { get; init; }           // always false
-    public bool UsePaymentech { get; init; }         // always true
-    public object? Customers { get; init; }          // always null in new impl
-    public object? Cybersource { get; init; }        // always null in new impl
-    public string? SafeAccountEmail { get; init; }   // always null in new impl
+    // ── Route (from cart_order_route) ──────────────────────────────────────────────
 
-    // Formatted currency strings
-    public string? SubTotalAmountFmt { get; init; }
-    public string? TaxAmountFmt { get; init; }
-    public string? TotalAmountFmt { get; init; }
-    public string? OfferAmountFmt { get; init; }
+    /// <summary>Cart routing URL object. Built from routing_action + message_key.</summary>
+    public CartOrderRouteResponse? Route { get; set; }
+
+    // ── Top-level status flags ─────────────────────────────────────────────────────────
+
+    /// <summary>Whether this order was created via an external (partner API) path.</summary>
+    public bool IsExternal { get; set; }
+
+    /// <summary>Customer data object (populated separately). Always null on create.</summary>
+    public object? Customers { get; set; }
+
+    /// <summary>CyberSource session object (populated by payment processing). Always null on create.</summary>
+    public object? Cybersource { get; set; }
+
+    /// <summary>Whether the order uses Paymentech payment processing.</summary>
+    public bool UsePaymentech { get; set; }
+
+    /// <summary>Masked account e-mail. Null until account is linked.</summary>
+    public string? SafeAccountEmail { get; set; }
+
+    // ── Formatted monetary amounts ───────────────────────────────────────────────────
+
+    /// <summary>SubTotalAmount formatted as currency string (e.g. "$294.00").</summary>
+    public string? SubTotalAmountFmt { get; set; }
+
+    /// <summary>TaxAmount formatted as currency string (e.g. "$0.00").</summary>
+    public string? TaxAmountFmt { get; set; }
+
+    /// <summary>TotalAmount formatted as currency string (e.g. "$294.00").</summary>
+    public string? TotalAmountFmt { get; set; }
+
+    /// <summary>OfferAmount formatted as currency string (e.g. "$0.00").</summary>
+    public string? OfferAmountFmt { get; set; }
 }
 
-/// <summary>
-/// Legacy-compatible route wrapper returned in cart-order responses.
-/// "route": { "route": "https://www.webroot.com/us/en/cart?routing_action=billing&key=..." }
-/// </summary>
-public sealed class CartOrderRouteInfo
+/// <summary>Route navigation URL for the cart checkout flow.</summary>
+public sealed class CartOrderRouteResponse
 {
+    /// <summary>Full URL to the cart routing action page.</summary>
     public string? Route { get; init; }
 }
 

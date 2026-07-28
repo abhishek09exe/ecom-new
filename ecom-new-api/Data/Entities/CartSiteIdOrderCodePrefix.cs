@@ -1,21 +1,20 @@
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace ecom_new_api.Data.Entities;
 
-/// <summary>
-/// Maps to [cart_site_id_order_code_prefix].
-/// Stores the short prefix string used to build vendor_order_code per site_id.
-/// SP section 2.1: SELECT vendor_order_code_prefix FROM cart_site_id_order_code_prefix WHERE site_id = @site_id
-/// </summary>
+[Table("cart_site_id_order_code_prefix")]
 public sealed class CartSiteIdOrderCodePrefix
 {
-    /// <summary>PK — identity int.</summary>
-    public int CartSiteIdOrderCodePrefixId { get; set; }
+    [Key]
+    [Column("id")]
+    public int Id { get; set; }
 
-    /// <summary>site_id value passed on the cart order request (unique, not null).</summary>
-    public string SiteId { get; set; } = string.Empty;
+    [Column("site_id")]
+    [MaxLength(65)]
+    public string SiteId { get; set; } = default!;
 
-    /// <summary>Short prefix prepended to the sequential number, e.g. "ECM", "GSM".</summary>
-    public string VendorOrderCodePrefix { get; set; } = string.Empty;
-
-    /// <summary>Optional human-readable description of this site mapping.</summary>
-    public string? SiteIdDescription { get; set; }
+    [Column("vendor_order_code_prefix")]
+    [MaxLength(5)]
+    public string VendorOrderCodePrefix { get; set; } = default!;
 }

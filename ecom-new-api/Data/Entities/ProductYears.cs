@@ -1,19 +1,21 @@
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace ecom_new_api.Data.Entities;
 
-/// <summary>
-/// Maps to [dbo].[product_years].
-/// Composite PK (product_id, years). Stores the term length (in years) for a product.
-/// </summary>
+[Table("product_years")]
 public sealed class ProductYears
 {
+    [Key]
+    [Column("product_years_id")]
+    public int ProductYearsId { get; set; }
+
+    [Column("product_id")]
     public int ProductId { get; set; }
 
-    /// <summary>float in SQL — stored as double here, exposed as decimal on responses.</summary>
-    public double Years { get; set; }
+    [Column("years")]
+    public decimal Years { get; set; }
 
-    public byte? UpgradeMonths { get; set; }
-    public int? UpgradeDays { get; set; }
-
-    // Navigation property
+    // Navigation
     public Product? Product { get; set; }
 }

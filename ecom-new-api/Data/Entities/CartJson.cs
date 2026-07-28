@@ -1,16 +1,18 @@
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace ecom_new_api.Data.Entities;
 
-/// <summary>
-/// Maps to the cart_json table.
-/// Stores the extension JSON blob for a cart order (one-to-one with cart_order).
-/// </summary>
+[Table("cart_json")]
 public sealed class CartJson
 {
+    [Key]
+    [Column("cart_json_id")]
     public int CartJsonId { get; set; }
-    public string Json { get; set; } = default!;     // NOT NULL in QA
-    public int? CartOrderId { get; set; }
-    public int? CartOrderInProcessId { get; set; }
 
-    // Navigation
-    public CartOrder? CartOrder { get; set; }
+    [Column("cart_order_id")]
+    public int CartOrderId { get; set; }
+
+    [Column("cart_json")]
+    public string? Json { get; set; }
 }

@@ -1,16 +1,22 @@
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace ecom_new_api.Data.Entities;
 
-/// <summary>
-/// Maps to [dbo].[product_license_category].
-/// Join table — composite PK (license_category_id, product_id).
-/// </summary>
+[Table("product_license_category")]
 public sealed class ProductLicenseCategory
 {
-    public int ProductId { get; set; }
-    public int LicenseCategoryId { get; set; }
-    public int? CurrentLicenseCategoryId { get; set; }
+    [Key]
+    [Column("product_license_category_id")]
+    public int ProductLicenseCategoryId { get; set; }
 
-    // Navigation properties
+    [Column("product_id")]
+    public int ProductId { get; set; }
+
+    [Column("license_category_id")]
+    public int LicenseCategoryId { get; set; }
+
+    // Navigation
     public Product? Product { get; set; }
     public LicenseCategory? LicenseCategory { get; set; }
 }

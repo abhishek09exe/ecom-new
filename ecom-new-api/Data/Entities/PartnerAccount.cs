@@ -1,15 +1,21 @@
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace ecom_new_api.Data.Entities;
 
-/// <summary>
-/// Maps to [partner_account].
-/// SP usp_cart_insert_cart_order section 2.3:
-///   SELECT partner_account_id FROM partner_account JOIN account
-///   WHERE partner_id = @partner_id AND account_user_name = @account_user_name
-/// Read-only — used to resolve partner_account_id when inserting cart_order_partner.
-/// </summary>
+[Table("partner_account")]
 public sealed class PartnerAccount
 {
+    [Key]
+    [Column("partner_account_id")]
     public int PartnerAccountId { get; set; }
+
+    [Column("partner_id")]
     public int PartnerId { get; set; }
+
+    [Column("account_id")]
     public int AccountId { get; set; }
+
+    // Navigation
+    public Account? Account { get; set; }
 }

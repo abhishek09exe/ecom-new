@@ -1,5 +1,5 @@
-using System.Text.Json;
 using ecom_new_api.Data;
+using ecom_new_api.Infrastructure;
 using ecom_new_api.Repositories;
 using ecom_new_api.Services;
 using Microsoft.EntityFrameworkCore;
@@ -8,25 +8,22 @@ var builder = WebApplication.CreateBuilder(args);
 
 // ── MVC / Swagger ───────────────────────────────────────────────────────────────
 builder.Services.AddControllers()
-    .AddJsonOptions(opts =>
+    .AddJsonOptions(options =>
     {
-        // Match legacy snake_case response contract (vendor_order_code, site_id, …).
-        // Also makes request deserialization accept snake_case body fields.
-        opts.JsonSerializerOptions.PropertyNamingPolicy        = JsonNamingPolicy.SnakeCaseLower;
-        opts.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
+        options.JsonSerializerOptions.PropertyNamingPolicy = SnakeCaseNamingPolicy.Instance;
+        options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
     });
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// ── Database (EF Core + SQL Server) ─────────────────────────────────────────────
-// Reads "CartDb" from appsettings.json / appsettings.Development.json.
-// Required by CartOrderRepository; not used by MockCartOrderRepository.
+// ── EF Core DbContext ────────────────────────────────────────────────────────────
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("CartDb")));
+    options.UseSqlServer(
+        builder.Configuration.GetConnectionString("EcomDb"),
+        sql => sql.CommandTimeout(60)));
 
 // ── Repositories ────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
-// builder.Services.AddScoped<ICartOrderRepository, MockCartOrderRepository>();
 
 // ── Services ────────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderService, CartOrderService>();

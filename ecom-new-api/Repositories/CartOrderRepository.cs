@@ -8,29 +8,22 @@ using Microsoft.EntityFrameworkCore;
 namespace ecom_new_api.Repositories;
 
 /// <summary>
-/// Pure EF Core implementation of <see cref="ICartOrderRepository"/>.
-///
-/// Methods mirror the original stored procedures 1-to-1:
-///   InsertCartOrderAsync        ← usp_cart_insert_cart_order (header + all items, in one transaction)
-///   SelectCartOrderAsync        ← usp_cart_select_cart_order + usp_cart_select_cart_order_item
-///   FindExistingVendorOrderCodeByKeyAsync ← cart_order_message lookup (quote-key pivot, G14)
-///
-/// SP behaviours preserved:
-///   G3  — vendor_order_code via EXEC usp_next_id @Type=3 (ids table)
-///   G10 — cart_order_item_json_log audit row after items inserted
-///   G11 — line_item offset for add-to-cart (MAX existing line_item + 1)
-///   G12 — CBCART → WRCART reroute hack (SP section 2.2.1)
-///   G13 — CD (S/H) line date sync via ExecuteSqlAsync
+/// EF Core implementation of ICartOrderRepository.
+/// Each private/public method maps 1-to-1 with a stored procedure:
+///   InsertCartOrderHeaderAsync  ← usp_cart_insert_cart_order
+///   InsertCartOrderItemAsync    ← usp_cart_insert_cart_order_item
+///   SelectCartOrderHeaderAsync  ← usp_cart_select_cart_order
+///   SelectCartOrderItemsAsync   ← usp_cart_select_cart_order_item
 /// </summary>
 public sealed class CartOrderRepository : ICartOrderRepository
 {
-    // partner_configuration_id = 15 → currency override for partner orders (SP 1.3.2)
-    private const byte PartnerCurrencyConfigId = 15;
-    // Default currency_id (1 = USD) when no match found (SP 1.3.3)
-    private const byte DefaultCurrencyId = 1;
-
     private readonly AppDbContext _db;
     private readonly ILogger<CartOrderRepository> _logger;
+
+    // partner_configuration_id = 15 → currency override for partner orders (matches SP)
+    private const int PartnerCurrencyConfigId = 15;
+    // default currency_id when no match found (matches SP default)
+    private const byte DefaultCurrencyId = 1;
 
     public CartOrderRepository(AppDbContext db, ILogger<CartOrderRepository> logger)
     {
@@ -38,97 +31,28 @@ public sealed class CartOrderRepository : ICartOrderRepository
         _logger = logger;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PUBLIC — ICartOrderRepository
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Composite: InsertCartOrderAsync ──────────────────────────────────────────
+    // Orchestrates InsertCartOrderHeaderAsync + InsertCartOrderItemAsync per item.
 
-    /// <inheritdoc/>
     public async Task<string> InsertCartOrderAsync(
         CartOrderCreateRequest request, CancellationToken ct = default)
     {
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
         try
         {
-            // ── Header + related rows (cart_order_partner, route, message, json) ──
-            var (vendorOrderCode, order) = await InsertCartOrderHeaderAsync(request, ct);
+            var vendorOrderCode = await InsertCartOrderHeaderAsync(request, ct);
 
-            // ── G11: max line_item for add-to-cart scenario ────────────────────
-            // For a brand-new cart this is 0.  For a re-submitted cart we offset
-            // new items so line_item values remain unique.
-            int maxLineItem = 0;
-            if (!string.IsNullOrWhiteSpace(request.VendorOrderCode))
+            var cartOrderId = await _db.CartOrder
+                .Where(o => o.VendorOrderCode == vendorOrderCode)
+                .Select(o => o.CartOrderId)
+                .SingleAsync(ct);
+
+            for (var i = 0; i < request.Items.Count; i++)
             {
-                maxLineItem = await _db.CartOrderItems
-                    .Where(i => i.CartOrderId == order.CartOrderId)
-                    .Select(i => (int?)i.LineItem)
-                    .MaxAsync(ct) ?? 0;
+                await InsertCartOrderItemAsync(cartOrderId, vendorOrderCode, request.Items[i], i + 1, ct);
             }
-
-            // ── Items ──────────────────────────────────────────────────────────
-            for (var idx = 0; idx < request.Items.Count; idx++)
-                await InsertCartOrderItemAsync(order.CartOrderId, request.Items[idx], maxLineItem + idx + 1, ct);
-
-            // Reload items into the tracked entity so we can compute totals
-            await _db.Entry(order).Collection(o => o.Items).LoadAsync(ct);
-
-            // ── G10: JSON audit log (one row per cart-create call) ─────────────
-            _db.CartOrderItemJsonLogs.Add(new CartOrderItemJsonLog
-            {
-                CartOrderId = order.CartOrderId,
-                ItemJson    = JsonSerializer.Serialize(request.Items),
-                BundleJson  = JsonSerializer.Serialize(
-                    request.Items.Select(x => new
-                    {
-                        keycode = x.Keycode,
-                        license_attribute_license_value = x.LicenseAttributeLicenseValue
-                    })),
-                InsertDate = DateTime.UtcNow
-            });
-
-            // ── SP 5.5: total_amount / sub_total_amount ────────────────────────
-            var totalAmount = order.Items.Sum(i => (decimal)i.UnitPrice * i.Quantity);
-            order.TotalAmount    = totalAmount;
-            order.SubTotalAmount = totalAmount;
-
-            await _db.SaveChangesAsync(ct);
-
-            // ── G12: CBCART → WRCART reroute (SP section 2.2.1) ───────────────
-            if (string.Equals(order.SiteId, "CBCART", StringComparison.OrdinalIgnoreCase)
-                && order.CurrencyId.HasValue
-                && new byte[] { 1, 2, 3, 4, 29 }.Contains(order.CurrencyId.Value)
-                && request.Items.Any(i => i.Years == 0))
-            {
-                order.Locale    = "en_US";
-                order.SiteId    = "WRCART";
-                order.OrderType = "WRCART";
-                await _db.SaveChangesAsync(ct);
-            }
-
-            // ── G13: CD (S/H) line date sync ───────────────────────────────────
-            // S/H items (product_family_id = 8) inherit start/expiration from the
-            // non-CD product in the same cart_item_bundle_id.
-            await _db.Database.ExecuteSqlAsync(
-                $"""
-                UPDATE coi2
-                SET   coi2.start_date      = coi.start_date,
-                      coi2.expiration_date = coi.expiration_date
-                FROM  dbo.cart_order_item coi
-                INNER JOIN dbo.product p  ON p.product_id  = coi.product_id
-                INNER JOIN dbo.cart_order_item coi2
-                    ON  coi2.cart_order_id       = coi.cart_order_id
-                    AND coi2.cart_item_bundle_id = coi.cart_item_bundle_id
-                INNER JOIN dbo.product p2 ON p2.product_id = coi2.product_id
-                WHERE coi.cart_order_id = {order.CartOrderId}
-                  AND (p.product_family_id <> 8 OR p.product_family_id IS NULL)
-                  AND p2.product_family_id = 8
-                """, ct);
 
             await tx.CommitAsync(ct);
-
-            _logger.LogInformation(
-                "CartOrderRepository: inserted cart_order_id={CartOrderId} vendor_order_code={VendorOrderCode} total={TotalAmount}",
-                order.CartOrderId, vendorOrderCode, totalAmount);
-
             return vendorOrderCode;
         }
         catch
@@ -138,312 +62,315 @@ public sealed class CartOrderRepository : ICartOrderRepository
         }
     }
 
-    /// <inheritdoc/>
+    // ── Composite: SelectCartOrderAsync ──────────────────────────────────────────
+    // Combines SelectCartOrderHeaderAsync + SelectCartOrderItemsAsync.
+
     public async Task<CartOrderResponse?> SelectCartOrderAsync(
         string vendorOrderCode, CancellationToken ct = default)
     {
         var header = await SelectCartOrderHeaderAsync(vendorOrderCode, ct);
         if (header is null) return null;
 
-        // Message key — same for all items in the order
-        var messageKey = await _db.CartOrderMessages
-            .Where(m => m.CartOrderId == header.CartOrderId)
-            .Select(m => (Guid?)m.MessageKey)
-            .FirstOrDefaultAsync(ct);
-        var messageKeyStr  = messageKey?.ToString();
+        var messageKey = await GetOrderMessageKeyAsync(header.CartOrderId, ct);
         var currencySymbol = GetCurrencySymbol(header.CurrencyCode);
+        var items = await SelectCartOrderItemsAsync(vendorOrderCode, ct);
 
-        var items = await SelectCartOrderItemsAsync(
-            header.CartOrderId, messageKeyStr, currencySymbol, ct);
+        // Enrich items with computed sub-totals and formatted strings
+        foreach (var item in items)
+        {
+            item.MessageKey = messageKey;
+            item.SubTotalListAmount = item.ListPrice.HasValue ? item.ListPrice * item.Quantity : null;
+            item.SubTotalAmount = item.UnitPrice.HasValue ? item.UnitPrice * item.Quantity : null;
+            item.SubTotalAmountPreVat = item.UnitPricePreVat.HasValue ? item.UnitPricePreVat * item.Quantity : null;
+            item.SubTotalEquivalentYearPrice = item.EquivalentYearPrice.HasValue ? item.EquivalentYearPrice * item.Quantity : null;
+            item.EstimatedMonthlyPrice = null;
+            item.EquivalentYearPriceFmt = FormatCurrency(item.EquivalentYearPrice, currencySymbol);
+            item.ListPriceFmt = FormatCurrency(item.ListPrice, currencySymbol);
+            item.UnitPriceFmt = FormatCurrency(item.UnitPrice, currencySymbol);
+            item.UnitPricePreVatFmt = FormatCurrency(item.UnitPricePreVat, currencySymbol);
+            item.UsagePriceFmt = FormatCurrency(item.UsagePrice, currencySymbol);
+            item.SubTotalEquivalentYearPriceFmt = FormatCurrency(item.SubTotalEquivalentYearPrice, currencySymbol);
+            item.SubTotalListAmountFmt = FormatCurrency(item.SubTotalListAmount, currencySymbol);
+            item.SubTotalAmountFmt = FormatCurrency(item.SubTotalAmount, currencySymbol);
+            item.SubTotalAmountPreVatFmt = FormatCurrency(item.SubTotalAmountPreVat, currencySymbol);
+        }
 
-        // Group by cart_item_bundle_id — legacy contract: "items": { "1": [{...}] }
+        // Group items by cart_item_bundle_id (key = bundle id as string)
         var itemsDict = items
             .GroupBy(i => (i.CartItemBundleId ?? 0).ToString())
             .ToDictionary(g => g.Key, g => g.ToList());
 
         return new CartOrderResponse
         {
-            CartOrderId       = header.CartOrderId,
-            VendorOrderCode   = header.VendorOrderCode,
-            SiteId            = header.SiteId,
-            OfferAmount       = header.OfferAmount,
-            TotalAmount       = header.TotalAmount,
-            SubTotalAmount    = header.SubTotalAmount,
-            TaxAmount         = header.TaxAmount,
-            SalesOrderDate    = header.SalesOrderDate,
-            Locale            = header.Locale,
-            InsertDate        = header.InsertDate,
-            InsertBy          = header.InsertBy,
-            ModifiedDate      = header.ModifiedDate,
-            ModifiedBy        = header.ModifiedBy,
+            CartOrderId = header.CartOrderId,
+            VendorOrderCode = header.VendorOrderCode,
+            SiteId = header.SiteId,
+            OfferAmount = header.OfferAmount,
+            TotalAmount = header.TotalAmount,
+            SubTotalAmount = header.SubTotalAmount,
+            TaxAmount = header.TaxAmount,
+            SalesOrderDate = header.SalesOrderDate,
+            Locale = header.Locale,
+            InsertDate = header.InsertDate,
+            InsertBy = header.InsertBy,
+            ModifiedDate = header.ModifiedDate,
+            ModifiedBy = header.ModifiedBy,
             CartOrderStatusId = header.CartOrderStatusId,
-            CurrencyId        = header.CurrencyId,
-            CurrencyCode      = header.CurrencyCode,
-            UserIp            = header.UserIp,
-            PartnerKey        = header.PartnerKey,
-            CartJson          = header.CartJson,
-            Route             = header.Route,
-            Items             = itemsDict,
-            IsExternal        = false,
-            UsePaymentech     = true,
-            Customers         = null,
-            Cybersource       = null,
-            SafeAccountEmail  = null,
+            CurrencyId = header.CurrencyId,
+            CurrencyCode = header.CurrencyCode,
+            UserIp = header.UserIp,
+            PartnerKey = header.PartnerKey,
+            CartJson = header.CartJson,
+            Items = itemsDict,
+            IsExternal = false,
+            UsePaymentech = true,
+            Customers = null,
+            Cybersource = null,
+            SafeAccountEmail = null,
             SubTotalAmountFmt = FormatCurrency(header.SubTotalAmount, currencySymbol),
-            TaxAmountFmt      = FormatCurrency(header.TaxAmount, currencySymbol),
-            TotalAmountFmt    = FormatCurrency(header.TotalAmount, currencySymbol),
-            OfferAmountFmt    = FormatCurrency(header.OfferAmount, currencySymbol)
+            TaxAmountFmt = FormatCurrency(header.TaxAmount, currencySymbol),
+            TotalAmountFmt = FormatCurrency(header.TotalAmount, currencySymbol),
+            OfferAmountFmt = FormatCurrency(header.OfferAmount, currencySymbol)
         };
     }
 
-    /// <inheritdoc/>
-    public async Task<string?> FindExistingVendorOrderCodeByKeyAsync(
-        string key, CancellationToken ct = default)
-    {
-        if (!Guid.TryParse(key, out var keyGuid)) return null;
+    // ── usp_cart_insert_cart_order ────────────────────────────────────────────────
 
-        return await (
-            from m in _db.CartOrderMessages
-            join o in _db.CartOrders on m.CartOrderId equals o.CartOrderId
-            where m.MessageKey == keyGuid
-            select o.VendorOrderCode
-        ).FirstOrDefaultAsync(ct);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PRIVATE — usp_cart_insert_cart_order (header rows)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    private async Task<(string VendorOrderCode, CartOrder Order)> InsertCartOrderHeaderAsync(
-        CartOrderCreateRequest request, CancellationToken ct)
+    public async Task<string> InsertCartOrderHeaderAsync(
+        CartOrderCreateRequest request, CancellationToken ct = default)
     {
         var now = DateTime.UtcNow;
+        var salesOrderDate = request.SalesOrderDate?.Date ?? now.Date;
 
-        // SP 1.1 — resolve partner_id from partner_key (UUID)
+        // 1.1) Resolve partner_id from partner_key
         int? partnerId = null;
-        if (!string.IsNullOrWhiteSpace(request.PartnerKey)
-            && Guid.TryParse(request.PartnerKey, out var partnerGuid))
+        if (!string.IsNullOrWhiteSpace(request.PartnerKey) && Guid.TryParse(request.PartnerKey, out var partnerGuid))
         {
-            partnerId = await _db.Partners
+            partnerId = await _db.Partner
                 .Where(p => p.PartnerKey == partnerGuid)
                 .Select(p => (int?)p.PartnerId)
                 .SingleOrDefaultAsync(ct);
         }
 
-        // SP 1.3 — resolve currency_id (request → partner config → default USD)
+        // 1.2) Resolve currency_id (SP sections 1.3.1 → 1.3.2 → 1.3.3)
         byte? currencyId = null;
+
         if (!string.IsNullOrWhiteSpace(request.CurrencyCode))
         {
-            currencyId = await _db.Currencies
+            currencyId = await _db.Currency
                 .Where(c => c.CurrencyCode == request.CurrencyCode)
                 .Select(c => (byte?)c.CurrencyId)
                 .SingleOrDefaultAsync(ct);
         }
+
         if (currencyId is null && partnerId is not null)
         {
-            var partnerCurrencyCode = await _db.PartnerConfigurationPartners
-                .Where(cp => cp.PartnerId == partnerId
-                          && cp.PartnerConfigurationId == PartnerCurrencyConfigId)
+            // Fallback: partner configuration currency (partner_configuration_id = 15)
+            var partnerCurrencyCode = await _db.PartnerConfigurationPartner
+                .Where(cp => cp.PartnerId == partnerId && cp.PartnerConfigurationId == PartnerCurrencyConfigId)
                 .Select(cp => cp.ConfigurationValue)
                 .SingleOrDefaultAsync(ct);
 
             if (!string.IsNullOrWhiteSpace(partnerCurrencyCode))
-                currencyId = await _db.Currencies
+            {
+                currencyId = await _db.Currency
                     .Where(c => c.CurrencyCode == partnerCurrencyCode)
                     .Select(c => (byte?)c.CurrencyId)
                     .SingleOrDefaultAsync(ct);
+            }
         }
+
         currencyId ??= DefaultCurrencyId;
 
-        // SP 2.1 — generate vendor_order_code if not supplied
+        // 2.1) Generate vendor_order_code if not supplied
         var vendorOrderCode = request.VendorOrderCode;
         if (string.IsNullOrWhiteSpace(vendorOrderCode))
         {
-            var prefix = await _db.CartSiteIdOrderCodePrefixes
+            var prefix = await _db.CartSiteIdOrderCodePrefix
                 .Where(x => x.SiteId == request.SiteId)
                 .Select(x => x.VendorOrderCodePrefix)
-                .SingleOrDefaultAsync(ct)
-                ?? request.SiteId[..Math.Min(3, request.SiteId.Length)].ToUpper();
+                .SingleOrDefaultAsync(ct) ?? string.Empty;
 
             var nextId = await GetNextVendorOrderIdAsync(ct);
-            vendorOrderCode = $"{prefix}{nextId:D8}";
+            vendorOrderCode = $"{prefix}{nextId}";
         }
 
-        // SP 2.2 — INSERT cart_order
+        // 2.2) Insert cart_order
         var order = new CartOrder
         {
             VendorOrderCode = vendorOrderCode,
-            OrderType       = request.SiteId,
-            SiteId          = request.SiteId,
-            SiteUrl         = request.SiteId,
-            SalesOrderDate  = request.SalesOrderDate?.Date ?? now.Date,
-            SubmissionDate  = now,
-            Locale          = request.Locale,
-            UserIp          = request.UserIp,
-            CurrencyId      = currencyId.Value,
-            InsertDate      = now,
-            InsertBy        = "api",
-            ModifiedDate    = now,
-            ModifiedBy      = "api"
+            OrderType = request.SiteId,
+            SiteId = request.SiteId,
+            SiteUrl = request.SiteId,
+            SalesOrderDate = salesOrderDate,
+            SubmissionDate = now,
+            Locale = request.Locale,
+            UserIp = request.UserIp,
+            CurrencyId = currencyId.Value,
+            InsertDate = now
         };
-        _db.CartOrders.Add(order);
+
+        _db.CartOrder.Add(order);
         await _db.SaveChangesAsync(ct);
 
-        // SP 2.3 — INSERT cart_order_partner (with partner_account_id via EF LINQ)
+        // 2.3) Insert cart_order_partner (optional)
         if (partnerId is not null)
         {
             int? partnerAccountId = null;
+
             if (!string.IsNullOrWhiteSpace(request.AccountUserName))
             {
                 partnerAccountId = await (
-                    from pa in _db.PartnerAccounts
-                    join a in _db.Accounts on pa.AccountId equals a.AccountId
-                    where pa.PartnerId == partnerId
-                       && a.AccountUserName == request.AccountUserName
+                    from pa in _db.PartnerAccount
+                    join a in _db.Account on pa.AccountId equals a.AccountId
+                    where pa.PartnerId == partnerId && a.AccountUserName == request.AccountUserName
                     select (int?)pa.PartnerAccountId
                 ).SingleOrDefaultAsync(ct);
             }
-            _db.CartOrderPartners.Add(new CartOrderPartner
+
+            _db.CartOrderPartner.Add(new CartOrderPartner
             {
-                CartOrderId      = order.CartOrderId,
-                PartnerId        = partnerId.Value,
+                CartOrderId = order.CartOrderId,
+                PartnerId = partnerId.Value,
                 PartnerAccountId = partnerAccountId
             });
         }
 
-        // SP 2.4 — INSERT cart_order_route
+        // 2.4) Insert cart_order_route (optional)
         if (!string.IsNullOrWhiteSpace(request.RoutingAction))
         {
-            _db.CartOrderRoutes.Add(new CartOrderRoute
+            _db.CartOrderRoute.Add(new CartOrderRoute
             {
-                CartOrderId   = order.CartOrderId,
+                CartOrderId = order.CartOrderId,
                 RoutingAction = request.RoutingAction,
-                InsertDate    = now
+                InsertDate = now
             });
         }
 
-        // SP 2.5 — INSERT cart_order_message (when message_key is a valid GUID)
-        if (!string.IsNullOrWhiteSpace(request.Key) && Guid.TryParse(request.Key, out var msgKeyGuid))
+        // 2.5) Insert cart_order_message (optional — when message_key is supplied)
+        var messageKey = string.IsNullOrWhiteSpace(request.MessageKey) ? null : request.MessageKey;
+        if (messageKey is not null)
         {
-            var licenseId = await _db.LicenseKeys
-                .Where(k => k.LicenseKeyValue == msgKeyGuid)
+            var licenseId = await _db.LicenseKey
+                .Where(k => k.Key == messageKey)
                 .Select(k => (int?)k.LicenseId)
                 .SingleOrDefaultAsync(ct);
 
-            _db.CartOrderMessages.Add(new CartOrderMessage
+            _db.CartOrderMessage.Add(new CartOrderMessage
             {
-                CartOrderId             = order.CartOrderId,
-                MessageKey              = msgKeyGuid,
-                MessageCampaignId       = request.MessageCampaignId,
+                CartOrderId = order.CartOrderId,
+                MessageKey = messageKey,
+                MessageCampaignId = request.MessageCampaignId,
                 MessageCampaignPlatform = request.MessageCampaignPlatform,
-                CartDiscountId          = request.CartDiscountId,
-                LicenseId               = licenseId
+                CartDiscountId = request.CartDiscountId,
+                LicenseId = licenseId
             });
         }
 
-        // SP 2.6 — INSERT cart_json
-        var cartJson = BuildCartExtensionJson(request);
-        if (cartJson is not null)
+        // 2.6) Insert cart_json (optional — stores the raw extension JSON)
+        var cartExtensionJson = BuildCartExtensionJson(request);
+        if (cartExtensionJson is not null)
         {
-            _db.CartJsons.Add(new CartJson
+            _db.CartJson.Add(new CartJson
             {
                 CartOrderId = order.CartOrderId,
-                Json        = cartJson
+                Json = cartExtensionJson
             });
         }
 
         await _db.SaveChangesAsync(ct);
-        return (vendorOrderCode, order);
+
+        _logger.LogInformation(
+            "InsertCartOrderHeaderAsync: created cart_order_id={CartOrderId} vendor_order_code={VendorOrderCode}",
+            order.CartOrderId, vendorOrderCode);
+
+        return vendorOrderCode;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PRIVATE — usp_cart_insert_cart_order_item (one call per item)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── usp_cart_insert_cart_order_item ───────────────────────────────────────────
 
-    private async Task InsertCartOrderItemAsync(
-        int cartOrderId, CartOrderItemRequest item, int lineItem, CancellationToken ct)
+    public async Task InsertCartOrderItemAsync(
+        int cartOrderId, string vendorOrderCode, CartOrderItemRequest item, int lineItem,
+        CancellationToken ct = default)
     {
-        // Resolve retail price from product when no override supplied
-        decimal? retailPrice = null;
-        if (item.UnitPrice is null)
-        {
-            retailPrice = await _db.Products
-                .Where(p => p.ProductId == item.ProductId)
-                .Select(p => p.RetailPrice)
-                .FirstOrDefaultAsync(ct);
-        }
+        // Look up license_category_id from license_category_name
+        var licCategoryId = await _db.LicenseCategory
+            .Where(lc => lc.LicenseCategoryName == item.LicenseCategoryName)
+            .Select(lc => (int?)lc.LicenseCategoryId)
+            .SingleOrDefaultAsync(ct);
 
-        var unitPrice = item.UnitPrice ?? retailPrice ?? 0m;
-        var listPrice = retailPrice ?? unitPrice;
-        var now       = DateTime.UtcNow;
+        // Resolve unit_price: use override from request if present,
+        // otherwise look up retail price from product_pricing.
+        // NOTE: Full partner/discount pricing logic from the SP is complex and should be
+        // replicated here once partner pricing tables are fully mapped.
+        decimal? unitPrice = item.UnitPrice;
+        decimal? listPrice = null;
+
+        if (unitPrice is null)
+        {
+            listPrice = await _db.ProductPricing
+                .Where(pp => pp.ProductId == item.ProductId)
+                .Select(pp => (decimal?)pp.RetailPrice)
+                .FirstOrDefaultAsync(ct);
+            unitPrice = listPrice;
+        }
 
         var cartItem = new CartOrderItem
         {
-            CartOrderId                  = cartOrderId,
-            LineItem                     = lineItem,
-            ProductId                    = item.ProductId,
-            // SP 5.3.2: license_seats used as quantity for business products
-            Quantity                     = item.Quantity ?? item.LicenseSeats ?? 1,
-            StorageGb                    = item.StorageGb,
-            ListPrice                    = listPrice,
-            UnitPrice                    = unitPrice,
-            UsagePrice                   = item.UsagePrice,
-            StartDate                    = item.StartDate,
-            ExpirationDate               = item.ExpirationDate,
-            CartItemBundleId             = item.CartItemBundleId,
-            ItemHierarchyId              = (byte?)item.ItemHierarchyId,
+            CartOrderId = cartOrderId,
+            LineItem = lineItem,
+            ProductId = item.ProductId,
+            Quantity = item.Quantity ?? 1,
+            StorageGb = item.StorageGb,
+            ListPrice = listPrice,
+            UnitPrice = unitPrice,
+            UsagePrice = item.UsagePrice,
+            StartDate = item.StartDate,
+            ExpirationDate = item.ExpirationDate,
+            CartItemBundleId = item.CartItemBundleId,
+            ItemHierarchyId = item.ItemHierarchyId,
             LicenseAttributeLicenseValue = item.LicenseAttributeLicenseValue,
-            VendorOrderItemCode          = item.VendorOrderItemCode,
-            Discount                     = item.Discount,
-            CartDiscountMethodId         = item.CartDiscountMethodId,
-            CartDiscountId               = item.CartDiscountId,
-            OpportunityLineItemId        = item.OpportunityLineItemId,
-            ProductLocale                = item.Locale,
-            InsertDate                   = now,
-            ModifiedDate                 = now
+            VendorOrderItemCode = item.VendorOrderItemCode,
+            Discount = item.Discount,
+            CartDiscountMethodId = item.CartDiscountMethodId,
+            CartDiscountId = item.CartDiscountId,
+            OpportunityLineItemId = item.OpportunityLineItemId,
+            ProductLocale = item.Locale
         };
-        _db.CartOrderItems.Add(cartItem);
+
+        _db.CartOrderItem.Add(cartItem);
         await _db.SaveChangesAsync(ct);
 
-        // INSERT cart_order_item_json (vault / platform / retention / pricing-level dimensions)
+        // Insert cart_order_item_json for extended fields (vault, platform, retention, pricing level)
         var itemJson = BuildCartOrderItemJson(item);
         if (itemJson is not null)
         {
-            _db.CartOrderItemJsons.Add(new CartOrderItemJson
+            _db.CartOrderItemJson.Add(new CartOrderItemJson
             {
-                CartOrderItemId        = cartItem.CartOrderItemId,
-                CartOrderItemJsonValue = itemJson,
-                InsertDate             = now,
-                ModifiedDate           = now
+                CartOrderItemId = cartItem.CartOrderItemId,
+                Json = itemJson
             });
             await _db.SaveChangesAsync(ct);
         }
+
+        _logger.LogInformation(
+            "InsertCartOrderItemAsync: created cart_order_item_id={CartOrderItemId} line={LineItem} product={ProductId}",
+            cartItem.CartOrderItemId, lineItem, item.ProductId);
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PRIVATE — usp_cart_select_cart_order (header)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── usp_cart_select_cart_order ────────────────────────────────────────────────
 
-    private sealed record OrderHeaderData(
-        int CartOrderId, string VendorOrderCode, string SiteId,
-        decimal? OfferAmount, decimal? TotalAmount, decimal SubTotalAmount,
-        decimal? TaxAmount, DateTime? SalesOrderDate, string Locale,
-        DateTime InsertDate, string? InsertBy, DateTime? ModifiedDate, string? ModifiedBy,
-        byte CartOrderStatusId, int CurrencyId, string CurrencyCode,
-        string? UserIp, string? PartnerKey, string? CartJson,
-        CartOrderRouteInfo? Route);
-
-    private async Task<OrderHeaderData?> SelectCartOrderHeaderAsync(
-        string vendorOrderCode, CancellationToken ct)
+    public async Task<CartOrderResponse?> SelectCartOrderHeaderAsync(
+        string vendorOrderCode, CancellationToken ct = default)
     {
         var row = await (
-            from co in _db.CartOrders
-            join cu in _db.Currencies on co.CurrencyId equals (byte)cu.CurrencyId
-            join cp in _db.CartOrderPartners on co.CartOrderId equals cp.CartOrderId into cpJoin
+            from co in _db.CartOrder
+            join cu in _db.Currency on co.CurrencyId equals cu.CurrencyId
+            join cp in _db.CartOrderPartner on co.CartOrderId equals cp.CartOrderId into cpJoin
             from cp in cpJoin.DefaultIfEmpty()
-            join p in _db.Partners on cp.PartnerId equals p.PartnerId into pJoin
+            join p in _db.Partner on cp.PartnerId equals p.PartnerId into pJoin
             from p in pJoin.DefaultIfEmpty()
-            join j in _db.CartJsons on co.CartOrderId equals j.CartOrderId into jJoin
+            join j in _db.CartJson on co.CartOrderId equals j.CartOrderId into jJoin
             from j in jJoin.DefaultIfEmpty()
             where co.VendorOrderCode == vendorOrderCode
             select new
@@ -462,270 +389,246 @@ public sealed class CartOrderRepository : ICartOrderRepository
                 co.ModifiedDate,
                 co.ModifiedBy,
                 co.CartOrderStatusId,
-                CurrencyId   = (int)cu.CurrencyId,
+                CurrencyId = (int)cu.CurrencyId,
                 cu.CurrencyCode,
                 co.UserIp,
-                PartnerKey   = p != null ? p.PartnerKey.ToString() : null,
-                CartJson     = j != null ? j.Json : null
+                PartnerKey = p != null ? p.PartnerKey.ToString() : null,
+                CartJson = j != null ? j.Json : null
             }
         ).SingleOrDefaultAsync(ct);
 
         if (row is null) return null;
 
-        // Build route URL from cart_order_route + cart_order_message
-        var routingAction = await _db.CartOrderRoutes
-            .Where(r => r.CartOrderId == row.CartOrderId)
-            .Select(r => (string?)r.RoutingAction)
-            .FirstOrDefaultAsync(ct);
-
-        var msgKey = await _db.CartOrderMessages
-            .Where(m => m.CartOrderId == row.CartOrderId)
-            .Select(m => (Guid?)m.MessageKey)
-            .FirstOrDefaultAsync(ct);
-
-        var route = BuildRouteInfo(row.Locale, routingAction, msgKey?.ToString());
-
-        return new OrderHeaderData(
-            row.CartOrderId, row.VendorOrderCode!, row.SiteId,
-            row.OfferAmount, row.TotalAmount, row.SubTotalAmount,
-            row.TaxAmount, row.SalesOrderDate, row.Locale,
-            row.InsertDate, row.InsertBy, row.ModifiedDate, row.ModifiedBy,
-            row.CartOrderStatusId, row.CurrencyId, row.CurrencyCode,
-            row.UserIp, row.PartnerKey, row.CartJson, route);
+        return new CartOrderResponse
+        {
+            CartOrderId = row.CartOrderId,
+            VendorOrderCode = row.VendorOrderCode,
+            SiteId = row.SiteId,
+            OfferAmount = row.OfferAmount,
+            TotalAmount = row.TotalAmount,
+            SubTotalAmount = row.SubTotalAmount,
+            TaxAmount = row.TaxAmount,
+            SalesOrderDate = row.SalesOrderDate,
+            Locale = row.Locale,
+            InsertDate = row.InsertDate,
+            InsertBy = row.InsertBy,
+            ModifiedDate = row.ModifiedDate,
+            ModifiedBy = row.ModifiedBy,
+            CartOrderStatusId = row.CartOrderStatusId,
+            CurrencyId = row.CurrencyId,
+            CurrencyCode = row.CurrencyCode,
+            UserIp = row.UserIp,
+            PartnerKey = row.PartnerKey,
+            CartJson = row.CartJson,
+            Items = new()
+        };
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PRIVATE — usp_cart_select_cart_order_item
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── usp_cart_select_cart_order_item ───────────────────────────────────────────
 
-    private async Task<List<CartOrderItemResponse>> SelectCartOrderItemsAsync(
-        int cartOrderId, string? messageKey, string currencySymbol, CancellationToken ct)
+    public async Task<List<CartOrderItemResponse>> SelectCartOrderItemsAsync(
+        string vendorOrderCode, CancellationToken ct = default)
     {
-        // Build dependent-item map: bundleId → primaryItemId (hierarchy 1)
-        var primaryByBundle = await _db.CartOrderItems
-            .Where(i => i.CartOrderId == cartOrderId && i.ItemHierarchyId == 1)
-            .Select(i => new { i.CartItemBundleId, i.CartOrderItemId })
-            .ToListAsync(ct);
-        var dependentMap = primaryByBundle
-            .Where(x => x.CartItemBundleId.HasValue)
-            .ToDictionary(x => x.CartItemBundleId!.Value, x => x.CartOrderItemId);
+        // Resolve cart_order_id + cart locale from vendor_order_code
+        var orderInfo = await _db.CartOrder
+            .Where(o => o.VendorOrderCode == vendorOrderCode)
+            .Select(o => new { o.CartOrderId, o.Locale })
+            .SingleOrDefaultAsync(ct);
 
+        if (orderInfo is null) return [];
+
+        // Main item query — mirrors the FROM/JOIN structure in usp_cart_select_cart_order_item
         var rows = await (
-            from i  in _db.CartOrderItems
-            join p  in _db.Products                 on i.ProductId                     equals p.ProductId
-            join pf in _db.ProductFamilies           on p.ProductFamilyId               equals (int?)pf.ProductFamilyId into pfJoin
-            from pf in pfJoin.DefaultIfEmpty()
-            join plp in _db.ProductLineProducts      on p.ProductId                     equals plp.ProductId  into plpJoin
-            from plp in plpJoin.DefaultIfEmpty()
-            join prl in _db.ProductLines             on plp.ProductLineId               equals prl.ProductLineId into prlJoin
-            from prl in prlJoin.DefaultIfEmpty()
-            join t  in _db.ProductTypes              on p.ProductTypeId                 equals t.ProductTypeId
-            join ij in _db.CartOrderItemJsons        on i.CartOrderItemId               equals ij.CartOrderItemId into ijJoin
+            from i in _db.CartOrderItem
+            join p in _db.Product on i.ProductId equals p.ProductId
+            join pf in _db.ProductFamily on p.ProductFamilyId equals pf.ProductFamilyId
+            join plp in _db.ProductLineProduct on p.ProductId equals plp.ProductId
+            join prl in _db.ProductLine on plp.ProductLineId equals prl.ProductLineId
+            join t in _db.ProductType on p.ProductTypeId equals t.ProductTypeId
+            join ij in _db.CartOrderItemJson on i.CartOrderItemId equals ij.CartOrderItemId into ijJoin
             from ij in ijJoin.DefaultIfEmpty()
-            join plc in _db.ProductLicenseCategories on p.ProductId                     equals plc.ProductId into plcJoin
+            join plc in _db.ProductLicenseCategory on p.ProductId equals plc.ProductId into plcJoin
             from plc in plcJoin.DefaultIfEmpty()
-            join lc in _db.LicenseCategories         on plc.LicenseCategoryId           equals lc.LicenseCategoryId into lcJoin
+            join lc in _db.LicenseCategory on plc.LicenseCategoryId equals lc.LicenseCategoryId into lcJoin
             from lc in lcJoin.DefaultIfEmpty()
-            join kt in _db.LicenseKeycodeTypes       on p.LicenseKeycodeTypeId          equals kt.LicenseKeycodeTypeId into ktJoin
+            join kt in _db.LicenseKeycodeType on p.LicenseKeycodeTypeId equals kt.LicenseKeycodeTypeId into ktJoin
             from kt in ktJoin.DefaultIfEmpty()
-            join y  in _db.ProductYears              on p.ProductId                     equals y.ProductId into yJoin
-            from y  in yJoin.DefaultIfEmpty()
-            join s  in _db.ProductSeats              on p.ProductId                     equals s.ProductId into sJoin
-            from s  in sJoin.DefaultIfEmpty()
-            join v  in _db.LicenseAttributeLicenseValues
-                on i.LicenseAttributeLicenseValue    equals v.LicenseAttributeLicenseValueId into vJoin
-            from v  in vJoin.DefaultIfEmpty()
-            join il in _db.CartOrderItemLicenses     on i.CartOrderItemId               equals il.CartOrderItemId into ilJoin
+            join y in _db.ProductYears on p.ProductId equals y.ProductId into yJoin
+            from y in yJoin.DefaultIfEmpty()
+            join s in _db.ProductSeat on p.ProductId equals s.ProductId into sJoin
+            from s in sJoin.DefaultIfEmpty()
+            join v in _db.LicenseAttributeLicenseValue
+                on i.LicenseAttributeLicenseValue equals v.Value into vJoin
+            from v in vJoin.DefaultIfEmpty()
+            join il in _db.CartOrderItemLicense on i.CartOrderItemId equals il.CartOrderItemId into ilJoin
             from il in ilJoin.DefaultIfEmpty()
-            where i.CartOrderId == cartOrderId
+            where i.CartOrderId == orderInfo.CartOrderId
             select new
             {
-                i.CartOrderItemId, i.CartOrderId, i.LineItem,
-                i.Quantity, i.StorageGb, i.OrderItemOfferAmount,
-                i.ListPrice, i.UnitPrice, i.UnitPricePreVat,
-                i.TaxItemTotal, i.UsagePrice, i.ProductId,
-                i.StartDate, i.ExpirationDate,
-                i.CartItemBundleId, i.ItemHierarchyId,
+                // cart_order_item fields
+                i.CartOrderItemId,
+                i.CartOrderId,
+                i.LineItem,
+                i.Quantity,
+                i.StorageGb,
+                i.OrderItemOfferAmount,
+                i.ListPrice,
+                i.UnitPrice,
+                i.UnitPricePreVat,
+                i.TaxItemTotal,
+                i.UsagePrice,
+                i.ProductId,
+                i.StartDate,
+                i.ExpirationDate,
+                i.CartItemBundleId,
+                i.ItemHierarchyId,
                 i.LicenseAttributeLicenseValue,
-                i.VendorOrderItemCode, i.OrderItemUpdateTypeId,
-                i.Discount, i.CartDiscountMethodId, i.CartDiscountId,
+                i.VendorOrderItemCode,
+                i.OrderItemUpdateTypeId,
+                i.Discount,
+                i.CartDiscountMethodId,
+                i.CartDiscountId,
                 i.OpportunityLineItemId,
-                p.ProductDescription, p.LicenseKeycodeTypeId,
-                t.ProductTypeId, t.ProductTypeDescription,
-                ProductFamilyDescription          = pf != null ? pf.ProductFamilyDescription : null,
-                ProductLineCartType               = prl != null ? prl.ProductLineCartType : null,
-                LicenseKeycodeTypeDescription     = kt != null ? kt.LicenseKeycodeTypeDescription : null,
-                LicenseCategoryId                 = lc != null ? (int?)lc.LicenseCategoryId : null,
-                LicenseCategoryName               = lc != null ? lc.LicenseCategoryName : null,
-                LicenseCategoryDescription        = lc != null ? lc.LicenseCategoryDescription : null,
-                MinOrderQuantity                  = lc != null ? lc.MinOrderQuantity : null,
-                MaxOrderQuantity                  = lc != null ? lc.MaxOrderQuantity : null,
-                Years                             = y != null ? (decimal?)y.Years : null,
-                Seats                             = s != null ? (int?)s.Seats : null,
-                LicenseAttributeLicenseValueDescr = v != null ? v.LicenseAttributeLicenseValueDescription : null,
-                Keycode                           = il != null ? il.Keycode : null,
-                ItemJsonRaw                       = ij != null ? ij.CartOrderItemJsonValue : null
+                // product
+                p.ProductDescription,
+                p.LicenseKeycodeTypeId,
+                // product_type
+                t.ProductTypeId,
+                t.ProductTypeDescription,
+                // product_family
+                pf.ProductFamilyDescription,
+                // product_line
+                prl.ProductLineCartType,
+                // license_keycode_type
+                LicenseKeycodeTypeDescription = kt != null ? kt.LicenseKeycodeTypeDescription : null,
+                // license_category
+                LicenseCategoryId = lc != null ? (int?)lc.LicenseCategoryId : null,
+                LicenseCategoryName = lc != null ? lc.LicenseCategoryName : null,
+                LicenseCategoryDescription = lc != null ? lc.LicenseCategoryDescription : null,
+                MinOrderQuantity = lc != null ? lc.MinOrderQuantity : null,
+                MaxOrderQuantity = lc != null ? lc.MaxOrderQuantity : null,
+                // product_years
+                Years = y != null ? (decimal?)y.Years : null,
+                // product_seat
+                Seats = s != null ? (int?)s.Seats : null,
+                // license_attribute_license_value
+                LicenseAttributeLicenseValueDescription = v != null ? v.Description : null,
+                // cart_order_item_license
+                Keycode = il != null ? il.Keycode : null,
+                // cart_order_item_json (raw, will be parsed client-side)
+                ItemJsonRaw = ij != null ? ij.Json : null
             }
         ).ToListAsync(ct);
 
+        // Resolve dependent item IDs (self-join for hierarchy 2 → hierarchy 1 parent)
+        // Mirrors: LEFT JOIN (...subquery...) d ON d.cart_order_id = i.cart_order_id AND ...
+        var dependentMap = await BuildDependentItemMapAsync(orderInfo.CartOrderId, ct);
+
         return rows.Select(r =>
         {
-            var jp = ParseItemJson(r.ItemJsonRaw);
+            var jp = ParseCartOrderItemJson(r.ItemJsonRaw);
 
-            // equivalent_year_price: retail_price × years
-            // NULL for usage-pricing-model-2 items under 1 TB with no item_total (SP logic)
-            decimal? equivYearPrice = null;
-            if (r.UnitPrice != 0 && r.Years.HasValue)
+            // equivalent_year_price is computed by joining product_pricing with fn_cart_select_one_year_products
+            // and fn_locale_to_lang_loc. Here we apply the same CASE logic using the stored unit_price as
+            // the retail_price proxy (full pricing joins would require additional tables).
+            // TODO: join product_pricing with locale-based language/location code for accurate computation.
+            decimal? equivalentYearPrice = null;
+            if (r.UnitPrice.HasValue && r.Years.HasValue)
             {
-                var isModel2Under1Tb = jp?.UsagePricingModelId == 2
-                    && jp?.ItemTotal is null
-                    && (r.StorageGb ?? 0) < 1024;
-                if (!isModel2Under1Tb)
-                    equivYearPrice = (decimal)r.UnitPrice * r.Years.Value;
+                var isUsagePricingModel2 = jp?.UsagePricingModelId == 2;
+                var itemTotalNull = jp?.ItemTotal is null;
+                var storageLessThan1TB = (r.StorageGb ?? 0) < 1024;
+
+                if (!(isUsagePricingModel2 && itemTotalNull && storageLessThan1TB))
+                {
+                    equivalentYearPrice = r.UnitPrice.Value * r.Years.Value;
+                }
             }
 
-            // DependentCartOrderItemId: for hierarchy-2 items, the hierarchy-1 partner
-            int? dependentId = r.ItemHierarchyId == 2 && r.CartItemBundleId.HasValue
-                ? dependentMap.GetValueOrDefault(r.CartItemBundleId.Value)
-                : null;
-
-            // Computed sub-totals
-            decimal? subTotalList  = r.ListPrice  != 0 ? (decimal?)r.ListPrice  * r.Quantity : null;
-            decimal? subTotal      = r.UnitPrice  != 0 ? (decimal?)r.UnitPrice  * r.Quantity : null;
-            decimal? subTotalPreVat= r.UnitPricePreVat.HasValue
-                ? r.UnitPricePreVat * r.Quantity : null;
-            decimal? subTotalEquiv = equivYearPrice.HasValue
-                ? equivYearPrice * r.Quantity : null;
+            var dependentId = dependentMap.TryGetValue(
+                (r.CartOrderId, r.CartItemBundleId, r.LineItem), out var d) ? d : (int?)null;
 
             return new CartOrderItemResponse
             {
-                CartOrderItemId                          = r.CartOrderItemId,
-                CartOrderId                              = r.CartOrderId,
-                LineItem                                 = r.LineItem,
-                Quantity                                 = r.Quantity,
-                Seats                                    = r.Seats,
-                LicenseSeats                             = r.Seats,    // legacy alias
-                StorageGb                                = r.StorageGb,
-                Years                                    = r.Years,
-                OrderItemOfferAmount                     = r.OrderItemOfferAmount,
-                EquivalentYearPrice                      = equivYearPrice,
-                ListPrice                                = r.ListPrice,
-                UnitPrice                                = r.UnitPrice,
-                UnitPricePreVat                          = r.UnitPricePreVat,
-                TaxItemTotal                             = r.TaxItemTotal,
-                UsagePrice                               = r.UsagePrice,
-                Discount                                 = r.Discount,
-                CartDiscountMethodId                     = r.CartDiscountMethodId,
-                CartDiscountId                           = r.CartDiscountId,
-                ProductId                                = r.ProductId,
-                ProductDescription                       = r.ProductDescription,
-                ProductTypeId                            = r.ProductTypeId,
-                ProductTypeDescription                   = r.ProductTypeDescription,
-                LicenseKeycodeTypeId                     = r.LicenseKeycodeTypeId,
-                LicenseKeycodeTypeDescription            = r.LicenseKeycodeTypeDescription,
-                LicenseCategoryId                        = r.LicenseCategoryId,
-                LicenseCategoryName                      = r.LicenseCategoryName,
-                LicenseCategoryDescription               = r.LicenseCategoryDescription,
-                ProductFamilyDescription                 = r.ProductFamilyDescription,
-                ProductLineCartType                      = r.ProductLineCartType,
-                MinOrderQuantity                         = r.MinOrderQuantity,
-                MaxOrderQuantity                         = r.MaxOrderQuantity,
-                StartDate                                = r.StartDate,
-                ExpirationDate                           = r.ExpirationDate,
-                CartItemBundleId                         = r.CartItemBundleId,
-                ItemHierarchyId                          = r.ItemHierarchyId,
-                DependentCartOrderItemId                 = dependentId,
-                Keycode                                  = r.Keycode,
-                LicenseAttributeLicenseValue             = r.LicenseAttributeLicenseValue,
-                LicenseAttributeLicenseValueDescription  = r.LicenseAttributeLicenseValueDescr,
-                VendorOrderItemCode                      = r.VendorOrderItemCode,
-                OrderItemUpdateTypeId                    = r.OrderItemUpdateTypeId,
-                OpportunityLineItemId                    = r.OpportunityLineItemId,
-                CartOrderItemJson                        = r.ItemJsonRaw,
-                // Legacy fields
-                MessageKey                               = messageKey,
-                SubTotalListAmount                       = subTotalList,
-                SubTotalAmount                           = subTotal,
-                SubTotalAmountPreVat                     = subTotalPreVat,
-                SubTotalEquivalentYearPrice              = subTotalEquiv,
-                EstimatedMonthlyPrice                    = null,
-                // Formatted amounts
-                EquivalentYearPriceFmt                   = FormatCurrency(equivYearPrice, currencySymbol),
-                ListPriceFmt                             = FormatCurrency(r.ListPrice, currencySymbol),
-                UnitPriceFmt                             = FormatCurrency(r.UnitPrice, currencySymbol),
-                UnitPricePreVatFmt                       = FormatCurrency(r.UnitPricePreVat, currencySymbol),
-                UsagePriceFmt                            = FormatCurrency(r.UsagePrice, currencySymbol),
-                SubTotalEquivalentYearPriceFmt           = FormatCurrency(subTotalEquiv, currencySymbol),
-                SubTotalListAmountFmt                    = FormatCurrency(subTotalList, currencySymbol),
-                SubTotalAmountFmt                        = FormatCurrency(subTotal, currencySymbol),
-                SubTotalAmountPreVatFmt                  = FormatCurrency(subTotalPreVat, currencySymbol),
-                // JSON-derived dimensions
-                UsagePricingModelId                      = jp?.UsagePricingModelId,
-                UsagePricingModelName                    = jp?.UsagePricingModelName,
-                RetentionModelId                         = jp?.RetentionModelId,
-                RetentionModelName                       = jp?.RetentionModelName,
-                RetentionTerm                            = jp?.RetentionTerm,
-                RetentionModelTypeId                     = jp?.RetentionModelTypeId,
-                ProductPlatformId                        = jp?.ProductPlatformId,
-                ProductPlatformName                      = jp?.ProductPlatformName,
-                VaultId                                  = jp?.VaultId,
-                VaultDatacenterName                      = jp?.VaultDatacenterName,
-                Vault                                    = jp?.Vault,
-                ProductPricingLevelId                    = jp?.ProductPricingLevelId,
-                PricingLevelDescription                  = jp?.PricingLevelDescription
+                CartOrderItemId = r.CartOrderItemId,
+                CartOrderId = r.CartOrderId,
+                LineItem = r.LineItem,
+                Quantity = r.Quantity,
+                StorageGb = r.StorageGb,
+                Years = r.Years,
+                OrderItemOfferAmount = r.OrderItemOfferAmount,
+                EquivalentYearPrice = equivalentYearPrice,
+                ListPrice = r.ListPrice,
+                UnitPrice = r.UnitPrice,
+                UnitPricePreVat = r.UnitPricePreVat,
+                TaxItemTotal = r.TaxItemTotal,
+                UsagePrice = r.UsagePrice,
+                ProductId = r.ProductId,
+                ProductDescription = r.ProductDescription,
+                ProductTypeId = r.ProductTypeId,
+                ProductTypeDescription = r.ProductTypeDescription,
+                LicenseKeycodeTypeId = r.LicenseKeycodeTypeId,
+                LicenseKeycodeTypeDescription = r.LicenseKeycodeTypeDescription,
+                LicenseCategoryId = r.LicenseCategoryId,
+                LicenseCategoryName = r.LicenseCategoryName,
+                LicenseCategoryDescription = r.LicenseCategoryDescription,
+                ProductFamilyDescription = r.ProductFamilyDescription,
+                ProductLineCartType = r.ProductLineCartType,
+                MinOrderQuantity = r.MinOrderQuantity,
+                MaxOrderQuantity = r.MaxOrderQuantity,
+                StartDate = r.StartDate,
+                ExpirationDate = r.ExpirationDate,
+                CartItemBundleId = r.CartItemBundleId,
+                ItemHierarchyId = r.ItemHierarchyId,
+                DependentCartOrderItemId = dependentId,
+                Keycode = r.Keycode,
+                LicenseAttributeLicenseValue = r.LicenseAttributeLicenseValue,
+                LicenseAttributeLicenseValueDescription = r.LicenseAttributeLicenseValueDescription,
+                VendorOrderItemCode = r.VendorOrderItemCode,
+                OrderItemUpdateTypeId = r.OrderItemUpdateTypeId,
+                Discount = r.Discount,
+                CartDiscountMethodId = r.CartDiscountMethodId,
+                CartDiscountId = r.CartDiscountId,
+                OpportunityLineItemId = r.OpportunityLineItemId,
+                // JSON-derived fields (from fn_cart_select_cart_order_item_json equivalent)
+                UsagePricingModelId = jp?.UsagePricingModelId,
+                UsagePricingModelName = jp?.UsagePricingModelName,
+                RetentionModelId = jp?.RetentionModelId,
+                RetentionModelName = jp?.RetentionModelName,
+                RetentionTerm = jp?.RetentionTerm,
+                RetentionModelTypeId = jp?.RetentionModelTypeId,
+                ProductPlatformId = jp?.ProductPlatformId,
+                ProductPlatformName = jp?.ProductPlatformName,
+                VaultId = jp?.VaultId,
+                VaultDatacenterName = jp?.VaultDatacenterName,
+                Vault = jp?.Vault,
+                ProductPricingLevelId = jp?.ProductPricingLevelId,
+                PricingLevelDescription = jp?.PricingLevelDescription,
+                LicenseSeats = r.Seats
             };
         }).ToList();
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PRIVATE — helpers
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── Quote-key check ───────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Calls usp_next_id @Type=3 via EF Core FromSqlRaw.
-    /// The SP atomically increments ids.next_id WHERE id_type=3 and returns the new value.
-    /// FromSqlRaw (without LINQ composition) executes the SQL directly — no subquery wrapping.
-    /// </summary>
-    private async Task<int> GetNextVendorOrderIdAsync(CancellationToken ct)
+    public async Task<string?> FindExistingVendorOrderCodeByKeyAsync(
+        string key, CancellationToken ct = default)
     {
-        var rows = await _db.Set<NextIdResult>()
-            .FromSqlRaw("EXEC usp_next_id @Type=3")
-            .AsNoTracking()
-            .ToListAsync(ct);
-
-        return rows.FirstOrDefault()?.NextId
-            ?? throw new InvalidOperationException(
-                "usp_next_id @Type=3 returned no rows — verify ids table has a row for id_type=3");
+        return await (
+            from m in _db.CartOrderMessage
+            join o in _db.CartOrder on m.CartOrderId equals o.CartOrderId
+            where m.MessageKey == key
+            select o.VendorOrderCode
+        ).FirstOrDefaultAsync(ct);
     }
 
-    private static CartOrderRouteInfo? BuildRouteInfo(string? locale, string? routingAction, string? key)
-    {
-        if (routingAction is null && key is null) return null;
+    // ── Read-path stubs (implemented by downstream services in future) ────────────
 
-        // "en_US" → "us/en"   |   "ja_JP" → "jp/ja"
-        var localePath = "us/en";
-        if (!string.IsNullOrWhiteSpace(locale) && locale.Contains('_'))
-        {
-            var p = locale.Split('_');
-            if (p.Length == 2)
-                localePath = $"{p[1].ToLower()}/{p[0].ToLower()}";
-        }
-
-        var qs = new System.Text.StringBuilder();
-        if (!string.IsNullOrWhiteSpace(routingAction))
-            qs.Append($"routing_action={Uri.EscapeDataString(routingAction)}");
-        if (!string.IsNullOrWhiteSpace(key))
-        {
-            if (qs.Length > 0) qs.Append('&');
-            qs.Append($"key={Uri.EscapeDataString(key)}");
-        }
-
-        return new CartOrderRouteInfo
-        {
-            Route = $"https://www.webroot.com/{localePath}/cart"
-                  + (qs.Length > 0 ? $"?{qs}" : string.Empty)
-        };
-    }
+    private async Task<string?> GetOrderMessageKeyAsync(int cartOrderId, CancellationToken ct)
+        => await _db.CartOrderMessage
+            .Where(m => m.CartOrderId == cartOrderId)
+            .Select(m => m.MessageKey)
+            .FirstOrDefaultAsync(ct);
 
     private static string GetCurrencySymbol(string? currencyCode) => currencyCode switch
     {
@@ -733,7 +636,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
         "GBP" => "£",
         "CAD" => "C$",
         "AUD" => "A$",
-        _     => "$"
+        _ => "$"   // USD and all other codes default to $
     };
 
     private static string? FormatCurrency(decimal? value, string symbol)
@@ -741,80 +644,145 @@ public sealed class CartOrderRepository : ICartOrderRepository
             ? $"{symbol}{value.Value.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)}"
             : null;
 
-    private static string? FormatCurrency(decimal value, string symbol)
-        => value == 0 ? null
-            : $"{symbol}{value.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)}";
+    public Task<LicenseOptionsResponse?> SelectLicenseOptionsAsync(
+        string keycode, CancellationToken ct = default)
+        => Task.FromResult<LicenseOptionsResponse?>(null);
 
+    public Task<ConfigureResponse?> SelectConfigureAsync(
+        string keycode, CancellationToken ct = default)
+        => Task.FromResult<ConfigureResponse?>(null);
+
+    public Task<UpgradeResponse?> SelectUpgradeAsync(
+        string keycode, CancellationToken ct = default)
+        => Task.FromResult<UpgradeResponse?>(null);
+
+    // ── Private helpers ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Generates the next sequential vendor order ID.
+    /// Equivalent to exec usp_next_id @Type=3 in the SP.
+    /// Uses MAX(cart_order_id) + 1 as a simple sequence. Replace with a SQL Server
+    /// SEQUENCE object or dedicated next-id table if the SP's exact behavior is required.
+    /// </summary>
+    private async Task<int> GetNextVendorOrderIdAsync(CancellationToken ct)
+    {
+        var maxId = await _db.CartOrder
+            .Select(o => (int?)o.CartOrderId)
+            .MaxAsync(ct);
+        return (maxId ?? 0) + 1;
+    }
+
+    /// <summary>
+    /// Builds the dependent-item map used to resolve DependentCartOrderItemId.
+    /// Mirrors the self-join subquery in usp_cart_select_cart_order_item.
+    /// </summary>
+    private async Task<Dictionary<(int CartOrderId, int? BundleId, int LineItem), int>> BuildDependentItemMapAsync(
+        int cartOrderId, CancellationToken ct)
+    {
+        var primaryItems = await (
+            from i in _db.CartOrderItem
+            join p in _db.Product on i.ProductId equals p.ProductId
+            join t in _db.ProductType on p.ProductTypeId equals t.ProductTypeId
+            where i.CartOrderId == cartOrderId && (t.ProductTypeId == 1 || t.ProductTypeId == 2)
+            select new { i.CartOrderItemId, i.CartOrderId, i.LineItem, i.CartItemBundleId }
+        ).ToListAsync(ct);
+
+        // Map: (cartOrderId, bundleId, hierarchyLineItem) → primaryItemId
+        return primaryItems.ToDictionary(
+            x => (x.CartOrderId, x.CartItemBundleId, x.LineItem),
+            x => x.CartOrderItemId);
+    }
+
+    /// <summary>
+    /// Serializes the cart extension JSON blob for cart_json.insert (SP section 2.6).
+    /// Returns null when there is nothing worth storing.
+    /// </summary>
     private static string? BuildCartExtensionJson(CartOrderCreateRequest r)
     {
-        // Only store if at least one optional extension field was provided (SP 2.6)
+        // Only store if at least one optional extension field was provided
         if (r.CurrencyCode is null && r.VendorOrderCode is null && r.PartnerKey is null
-            && r.AccountUserName is null && r.RoutingAction is null && r.Key is null
+            && r.AccountUserName is null && r.RoutingAction is null && r.MessageKey is null
             && r.MessageCampaignId is null && r.MessageCampaignPlatform is null
             && r.CartDiscountId is null && r.SalesOrderDate is null)
+        {
             return null;
+        }
 
         return JsonSerializer.Serialize(new
         {
-            currency_code             = r.CurrencyCode,
-            vendor_order_code         = r.VendorOrderCode,
-            partner_key               = r.PartnerKey,
-            account_user_name         = r.AccountUserName,
-            routing_action            = r.RoutingAction,
-            sales_order_date          = r.SalesOrderDate,
-            message_campaign_id       = r.MessageCampaignId,
+            currency_code = r.CurrencyCode,
+            vendor_order_code = r.VendorOrderCode,
+            partner_key = r.PartnerKey,
+            account_user_name = r.AccountUserName,
+            routing_action = r.RoutingAction,
+            sales_order_date = r.SalesOrderDate,
+            message_campaign_id = r.MessageCampaignId,
             message_campaign_platform = r.MessageCampaignPlatform,
-            key                       = r.Key,
-            cart_discount_id          = r.CartDiscountId
+            key = r.MessageKey,
+            cart_discount_id = r.CartDiscountId
         });
     }
 
+    /// <summary>
+    /// Serializes per-item extended fields into cart_order_item_json.
+    /// This is the equivalent of the fn_cart_select_cart_order_item_json TVF input.
+    /// Returns null when no extended fields are present.
+    /// </summary>
     private static string? BuildCartOrderItemJson(CartOrderItemRequest item)
     {
         if (item.UsagePricingModelId is null && item.RetentionModelId is null
             && item.ProductPlatformId is null && item.VaultId is null
             && item.ProductPricingLevelId is null && item.ItemTotal is null)
+        {
             return null;
+        }
 
         return JsonSerializer.Serialize(new
         {
-            usage_pricing_model_id   = item.UsagePricingModelId,
-            retention_model_id       = item.RetentionModelId,
-            product_platform_id      = item.ProductPlatformId,
-            vault_id                 = item.VaultId,
+            usage_pricing_model_id = item.UsagePricingModelId,
+            retention_model_id = item.RetentionModelId,
+            product_platform_id = item.ProductPlatformId,
+            vault_id = item.VaultId,
             product_pricing_level_id = item.ProductPricingLevelId,
-            item_total               = item.ItemTotal
+            item_total = item.ItemTotal
         });
     }
 
-    private static ItemJsonDimensions? ParseItemJson(string? json)
+    /// <summary>
+    /// Parses cart_order_item_json into a typed DTO.
+    /// Equivalent to fn_cart_select_cart_order_item_json OUTER APPLY in the select SP.
+    /// </summary>
+    private static CartOrderItemJsonDto? ParseCartOrderItemJson(string? json)
     {
         if (string.IsNullOrWhiteSpace(json)) return null;
         try
         {
-            return JsonSerializer.Deserialize<ItemJsonDimensions>(
-                json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            return JsonSerializer.Deserialize<CartOrderItemJsonDto>(json,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         }
-        catch { return null; }
+        catch
+        {
+            return null;
+        }
     }
 
-    // ── Internal DTO for cart_order_item_json parsing ─────────────────────────
+    // ── Internal DTO for cart_order_item_json parsing ─────────────────────────────
 
-    private sealed class ItemJsonDimensions
+    private sealed class CartOrderItemJsonDto
     {
-        public int?     UsagePricingModelId  { get; init; }
-        public string?  UsagePricingModelName { get; init; }
-        public int?     RetentionModelId     { get; init; }
-        public string?  RetentionModelName   { get; init; }
-        public int?     RetentionTerm        { get; init; }
-        public int?     RetentionModelTypeId { get; init; }
-        public int?     ProductPlatformId    { get; init; }
-        public string?  ProductPlatformName  { get; init; }
-        public int?     VaultId              { get; init; }
-        public string?  VaultDatacenterName  { get; init; }
-        public string?  Vault                { get; init; }
-        public int?     ProductPricingLevelId { get; init; }
-        public string?  PricingLevelDescription { get; init; }
-        public decimal? ItemTotal            { get; init; }
+        public int? UsagePricingModelId { get; init; }
+        public string? UsagePricingModelName { get; init; }
+        public int? RetentionModelId { get; init; }
+        public string? RetentionModelName { get; init; }
+        public int? RetentionTerm { get; init; }
+        public int? RetentionModelTypeId { get; init; }
+        public int? ProductPlatformId { get; init; }
+        public string? ProductPlatformName { get; init; }
+        public int? VaultId { get; init; }
+        public string? VaultDatacenterName { get; init; }
+        public string? Vault { get; init; }
+        public int? ProductPricingLevelId { get; init; }
+        public string? PricingLevelDescription { get; init; }
+        public decimal? ItemTotal { get; init; }
     }
 }

@@ -1,18 +1,17 @@
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace ecom_new_api.Data.Entities;
 
-/// <summary>
-/// Maps to [license_key].
-/// SP usp_cart_insert_cart_order section 2.5:
-///   SELECT license_id FROM license_key WHERE license_key = @message_key
-/// Read-only — never written from this service.
-/// </summary>
+[Table("license_key")]
 public sealed class LicenseKey
 {
-    public int LicenseKeyId { get; set; }
-
-    /// <summary>The keycode GUID — matches the request.Key field (message_key in SP).</summary>
-    public Guid LicenseKeyValue { get; set; }
-
+    [Key]
+    [Column("license_id")]
     public int LicenseId { get; set; }
-    public string? SalesforceLicenseId { get; set; }
+
+    // Column name is "license_key" matching the SP: WHERE license_key = @message_key
+    [Column("license_key")]
+    [MaxLength(36)]
+    public string Key { get; set; } = default!;
 }

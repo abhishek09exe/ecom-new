@@ -1,14 +1,17 @@
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace ecom_new_api.Data.Entities;
 
-/// <summary>
-/// Maps to [dbo].[license_attribute_license_value].
-/// Lookup table for billing model descriptions.
-/// Note: the PK column shares the same name as the FK on cart_order_item.
-/// </summary>
+[Table("license_attribute_license_value")]
 public sealed class LicenseAttributeLicenseValue
 {
-    /// <summary>PK — same int value stored in cart_order_item.license_attribute_license_value.</summary>
-    public int LicenseAttributeLicenseValueId { get; set; }
+    // PK is the value itself (same name as the table)
+    [Key]
+    [Column("license_attribute_license_value")]
+    public int Value { get; set; }
 
-    public string LicenseAttributeLicenseValueDescription { get; set; } = default!;
+    [Column("license_attribute_license_value_description")]
+    [MaxLength(255)]
+    public string? Description { get; set; }
 }

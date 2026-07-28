@@ -1,15 +1,22 @@
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace ecom_new_api.Data.Entities;
 
-/// <summary>
-/// Maps to [dbo].[product_line_product].
-/// Join table — composite PK (product_id, product_line_id).
-/// </summary>
+[Table("product_line_product")]
 public sealed class ProductLineProduct
 {
-    public int ProductLineId { get; set; }
+    [Key]
+    [Column("product_line_product_id")]
+    public int ProductLineProductId { get; set; }
+
+    [Column("product_id")]
     public int ProductId { get; set; }
 
-    // Navigation properties
+    [Column("product_line_id")]
+    public int ProductLineId { get; set; }
+
+    // Navigation
     public Product? Product { get; set; }
     public ProductLine? ProductLine { get; set; }
 }

@@ -1,13 +1,16 @@
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace ecom_new_api.Data.Entities;
 
-/// <summary>Maps to [dbo].[product_family].</summary>
+[Table("product_family")]
 public sealed class ProductFamily
 {
+    [Key]
+    [Column("product_family_id")]
     public int ProductFamilyId { get; set; }
-    public string ProductFamilyDescription { get; set; } = default!;
-    public string? ProductFamilyPrefix { get; set; }
-    public DateTime InsertDate { get; set; }
-    public string InsertBy { get; set; } = default!;
-    public DateTime ModifiedDate { get; set; }
-    public string ModifiedBy { get; set; } = default!;
+
+    [Column("product_family_description")]
+    [MaxLength(255)]
+    public string? ProductFamilyDescription { get; set; }
 }
