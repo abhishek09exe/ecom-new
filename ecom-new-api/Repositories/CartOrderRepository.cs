@@ -299,10 +299,64 @@ public sealed class CartOrderRepository : ICartOrderRepository
             .Select(lc => (int?)lc.LicenseCategoryId)
             .SingleOrDefaultAsync(ct);
 
+        // ── GAP: usp_cart_insert_cart_order_item — sections 1–4 not yet ported ─────────────────
+        //
+        // The following logic from the stored procedure is NOT yet implemented here.
+        // Each section lists the SQL objects it depends on and what C# work is required.
+        //
+        // SEC 1.2–1.3  LOCALE / LICENSE PROFILE
+        //   Needs: fn_locale_to_lang_loc  → C# helper: split "en-US" into language_code + location_code
+        //   Needs: entity License         → keycode → license_id, product_line_id, license_distribution_method_id
+        //   Needs: entity LicenseMessage  → resolve next monthly process_date (message_type_id=10)
+        //   Needs: fn_license_select_license_profile(license_id) → load renewal/upgrade license state
+        //
+        // SEC 1.9  PRODUCT LINE RESOLUTION
+        //   Needs: entity LicenseCategoryProductLine
+        //          → resolve product_line_id from language_code + location_code + license_category_id
+        //   Needs: entity LicenseCategoryProductLineLicenseAttributeLicenseValue
+        //          → resolve billing model (license_attribute_license_value) per location
+        //   Needs: AppConfig key sets via fn_app_config_select_key_values:
+        //          PILLR_LICENSE_CATEGORIES, UTILITY_BILLING_MODELS, CARBONITE_LICENSE_CATEGORIES,
+        //          BUSINESS_PRODUCT_LINE, DEFAULT_BUSINESS_BILLING_MODEL
+        //
+        // SEC 1.12–1.14  USAGE MODEL / RETENTION / PLATFORM OVERRIDES
+        //   Needs: entity PartnerUsagePricingModel  → per-partner usage_pricing_model_id override
+        //   Needs: entity PartnerRetentionModel     → per-partner retention_model_id override
+        //   Needs: entity PartnerProductPlatform    → per-partner product_platform_id override
+        //
+        // SEC 1.15  STORAGE
+        //   Needs: fn_get_item_storage_gb(...) → C# helper or DB scalar to derive storage_gb when null
+        //
+        // SEC 2.1–2.5  DATE & PRODUCT-TYPE DERIVATION
+        //   start_date / expiration_date calculated from license profile + years + billing model
+        //   product_type_id determined as 1=new / 2=renewal / 3=upgrade
+        //   Upgrade item injection (delta-seat rows) added to item set
+        //   Needs: fn_product_select_profile(...) → resolve product_id from 12 attributes
+        //          (product_line_id, license_category_id, years, qty, storage_gb, contract_days,
+        //           product_type_id, license_keycode_type_id, usage_pricing_model_id,
+        //           retention_model_id, product_platform_id, sap_material_number)
+        //
+        // SEC 3.1  CONSUMER PRODUCT SET & PRICING
+        //   Needs: usp_cart_select_renewal_product_set → returns retail_price + upgrade_price per item
+        //   Needs: entity ProductStorage               → storage products with storage_gb
+        //   Discount logic applied from cart_discount_method_id:
+        //     method 3 = percentage off retail_price
+        //     method 1 = fixed amount off retail_price
+        //     else      = upgrade_price
+        //
+        // SEC 4.1  BUSINESS DIRECT PRICING
+        //   list_price = product_pricing.retail_price (Pillr utility → $0)
+        //   unit_price = pro-rated by contract days / capability_activation_days (new/renewal)
+        //              = pro-rated by contract days / upgrade_days (upgrade)
+        //   Needs: entity ProductCapability           → capability_activation_days
+        //   Needs: fn_leap_days_between(start, end)   → C# helper: count Feb-29 occurrences in range
+        //   Tier discount via usp_license_select_category_discount_model:
+        //     Needs: result mapped into @item_discount_profile, applied as % off unit_price
+        //   Needs: entities LicenseCartDiscount + CartDiscountItem → apply license_cart_discount
+        // ─────────────────────────────────────────────────────────────────────────────────────────
+
         // Resolve unit_price: use override from request if present,
-        // otherwise look up retail price from product_pricing.
-        // NOTE: Full partner/discount pricing logic from the SP is complex and should be
-        // replicated here once partner pricing tables are fully mapped.
+        // otherwise fall back to product_pricing.retail_price (no pro-rating, no partner/tier discount).
         decimal? unitPrice = item.UnitPrice;
         decimal? listPrice = null;
 
@@ -528,10 +582,25 @@ public sealed class CartOrderRepository : ICartOrderRepository
         {
             var jp = ParseCartOrderItemJson(r.ItemJsonRaw);
 
-            // equivalent_year_price is computed by joining product_pricing with fn_cart_select_one_year_products
-            // and fn_locale_to_lang_loc. Here we apply the same CASE logic using the stored unit_price as
-            // the retail_price proxy (full pricing joins would require additional tables).
-            // TODO: join product_pricing with locale-based language/location code for accurate computation.
+            // ── GAP: equivalent_year_price — fn_cart_select_one_year_products + fn_locale_to_lang_loc not yet ported ──
+            //
+            // The SP computes equivalent_year_price with:
+            //   OUTER APPLY fn_locale_to_lang_loc(ISNULL(i.product_locale, @cart_locale)) ll
+            //   OUTER APPLY fn_cart_select_one_year_products(p.product_id) oyp
+            //   LEFT JOIN product_pricing pp
+            //       ON pp.product_id = oyp.product_id
+            //      AND pp.location_code = ll.location_code
+            //      AND pp.language_code = ll.language_code
+            //
+            // What is needed to fix this:
+            //   1. fn_locale_to_lang_loc: C# helper — split "en-US" into language_code="en", location_code="US"
+            //      (no new entity required; pure string logic)
+            //   2. fn_cart_select_one_year_products: resolve the 1-year product variant for a given product_id
+            //      Needs: product_pricing joined with product_years where years = 1
+            //      (may require a new helper or additional ProductPricing query)
+            //   3. Replace the current unit_price * years proxy below with:
+            //      retail_price of the 1-year equivalent product in the item/cart locale
+            // ──────────────────────────────────────────────────────────────────────────────────────────────────────
             decimal? equivalentYearPrice = null;
             if (r.UnitPrice.HasValue && r.Years.HasValue)
             {
