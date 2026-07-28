@@ -1,5 +1,7 @@
 using ecom_new_api.Repositories;
 using ecom_new_api.Services;
+using ecom_new_api.Data;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -9,10 +11,10 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 // ── Repositories ────────────────────────────────────────────────────────────────
-// TODO: REPLACE WITH ACTUAL — swap MockCartOrderRepository for the real EF Core / SqlClient
-// implementation once DB access is available.
-// e.g. builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
-builder.Services.AddScoped<ICartOrderRepository, MockCartOrderRepository>();
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(
+        builder.Configuration.GetConnectionString("DefaultConnection")));
+builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
 
 // ── Services ────────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderService, CartOrderService>();
