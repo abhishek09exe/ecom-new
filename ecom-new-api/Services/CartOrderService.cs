@@ -12,24 +12,13 @@ public sealed class CartOrderService : ICartOrderService
 {
     private readonly ICartOrderRepository _repo;
     private readonly ILogger<CartOrderService> _logger;
+    private readonly IConfiguration _config;
 
-    // ── Allowed-value sets ──────────────────────────────────────────────────────
-    // TODO: REPLACE WITH ACTUAL — load these from DB / configuration at startup
-    // so they don't need a code change when the allowed values change.
-
-    private static readonly HashSet<string> AllowedSiteIds =
-        ["gsm", "webroot", "MOCK_SITE"]; // TODO: REPLACE WITH ACTUAL — from DB/config
-
-    private static readonly HashSet<string> AllowedLicenseCategoryNames =
-        ["SOHO", "SMB", "ENT", "MOCK_CATEGORY"]; // TODO: REPLACE WITH ACTUAL — from DB/config
-
-    private static readonly HashSet<int> AllowedYears =
-        [1, 2, 3]; // TODO: REPLACE WITH ACTUAL — from DB/config
-
-    public CartOrderService(ICartOrderRepository repo, ILogger<CartOrderService> logger)
+    public CartOrderService(ICartOrderRepository repo, ILogger<CartOrderService> logger, IConfiguration config)
     {
         _repo = repo;
         _logger = logger;
+        _config = config;
     }
 
     // ── POST /cart/cart-orders ──────────────────────────────────────────────────
@@ -44,14 +33,14 @@ public sealed class CartOrderService : ICartOrderService
 
         // 2) Quote-key pivot: if the key already has a pending cart, update instead of insert
         //    TODO: REPLACE WITH ACTUAL — wire UpdateCartOrderAsync once available
-        if (!string.IsNullOrWhiteSpace(request.Key))
+        if (!string.IsNullOrWhiteSpace(request.MessageKey))
         {
-            var existingCode = await _repo.FindExistingVendorOrderCodeByKeyAsync(request.Key, ct);
+            var existingCode = await _repo.FindExistingVendorOrderCodeByKeyAsync(request.MessageKey, ct);
             if (existingCode is not null)
             {
                 _logger.LogInformation(
                     "Key {Key} resolved to existing cart {VendorOrderCode} — pivoting to update",
-                    request.Key, existingCode);
+                    request.MessageKey, existingCode);
 
                 // TODO: REPLACE WITH ACTUAL — call usp_cart_update_cart_order here
                 // For now fall through to insert so the endpoint keeps responding
@@ -69,6 +58,14 @@ public sealed class CartOrderService : ICartOrderService
         {
             _logger.LogError("SelectCartOrderAsync returned null after insert for code {Code}", vendorOrderCode);
             return ServiceResult<CartOrderResponse>.Error("Cart order created but could not be retrieved");
+        }
+
+        // Build the route URL from routing_action + message_key
+        if (!string.IsNullOrWhiteSpace(request.RoutingAction))
+        {
+            var baseUrl = _config["CartRouteBaseUrl"] ?? "https://www.webroot.com/us/en/cart";
+            var routeUrl = $"{baseUrl}?routing_action={Uri.EscapeDataString(request.RoutingAction)}&key={request.MessageKey ?? string.Empty}";
+            order.Route = new CartOrderRouteResponse { Route = routeUrl };
         }
 
         return ServiceResult<CartOrderResponse>.Ok(order);
@@ -118,50 +115,31 @@ public sealed class CartOrderService : ICartOrderService
     {
         var errors = new List<string>();
 
-        // Order-level rules (sourced from MIGRATION_STATUS_REPORT.md § Validation rules)
-
         if (string.IsNullOrWhiteSpace(r.SiteId))
             errors.Add("site_id is required");
-        else if (!AllowedSiteIds.Contains(r.SiteId))
-            errors.Add($"site_id '{r.SiteId}' is not in the allowed set");
-        // TODO: REPLACE WITH ACTUAL — AllowedSiteIds loaded from DB/config
 
         if (string.IsNullOrWhiteSpace(r.Locale))
             errors.Add("locale is required");
 
         if (!string.IsNullOrWhiteSpace(r.CurrencyCode) && r.CurrencyCode.Length != 3)
             errors.Add("currency_code must be a valid ISO 4217 code (3 characters)");
-        // TODO: REPLACE WITH ACTUAL — validate against currency table in DB
-
-        if (!string.IsNullOrWhiteSpace(r.VendorOrderCode) && r.VendorOrderCode.Trim().Length == 0)
-            errors.Add("vendor_order_code must not be blank if provided");
-
-        if (r.MessageCampaignId.HasValue && r.MessageCampaignId <= 0)
-            errors.Add("message_campaign_id must be a positive integer if provided");
-
-        if (!string.IsNullOrWhiteSpace(r.MessageCampaignPlatform) && r.MessageCampaignPlatform.Trim().Length == 0)
-            errors.Add("message_campaign_platform must not be blank if provided");
 
         if (!string.IsNullOrWhiteSpace(r.PartnerKey) && !Guid.TryParse(r.PartnerKey, out _))
             errors.Add("partner_key must be a valid UUID if provided");
-
-        if (!string.IsNullOrWhiteSpace(r.AccountUserName) && r.AccountUserName.Trim().Length == 0)
-            errors.Add("account_user_name must not be blank if provided");
 
         if (!string.IsNullOrWhiteSpace(r.UrlLink) &&
             !Uri.TryCreate(r.UrlLink, UriKind.Absolute, out _))
             errors.Add("url_link must be a valid absolute URL if provided");
 
-        // Item-level rules
+        if (r.MessageCampaignId.HasValue && r.MessageCampaignId <= 0)
+            errors.Add("message_campaign_id must be a positive integer if provided");
+
         foreach (var (item, index) in r.Items.Select((x, i) => (x, i)))
         {
             var prefix = $"items[{index}]";
 
             if (string.IsNullOrWhiteSpace(item.LicenseCategoryName))
                 errors.Add($"{prefix}.license_category_name is required");
-            else if (!AllowedLicenseCategoryNames.Contains(item.LicenseCategoryName))
-                errors.Add($"{prefix}.license_category_name '{item.LicenseCategoryName}' is not in the allowed set");
-            // TODO: REPLACE WITH ACTUAL — AllowedLicenseCategoryNames loaded from DB/config
 
             if (item.Quantity.HasValue && item.Quantity <= 0)
                 errors.Add($"{prefix}.quantity must be positive if provided");
@@ -169,23 +147,11 @@ public sealed class CartOrderService : ICartOrderService
             if (item.LicenseSeats.HasValue && item.LicenseSeats <= 0)
                 errors.Add($"{prefix}.license_seats must be positive if provided");
 
-            if (item.Years.HasValue && !AllowedYears.Contains((int)item.Years.Value))
-                errors.Add($"{prefix}.years must be in the allowed set ({string.Join(", ", AllowedYears)}) if provided");
-            // TODO: REPLACE WITH ACTUAL — AllowedYears loaded from DB/config
-
             if (item.ItemHierarchyId.HasValue && item.ItemHierarchyId is not (1 or 2))
                 errors.Add($"{prefix}.item_hierarchy_id must be 1 or 2 if provided");
 
-            // TODO: REPLACE WITH ACTUAL — storage/seat compatibility check
-            // StorageGb must be within configured maximums for the product/category.
-            // Requires a DB lookup of product configuration — stub below.
             if (item.StorageGb.HasValue && item.StorageGb <= 0)
                 errors.Add($"{prefix}.storage_gb must be positive if provided");
-            // TODO: REPLACE WITH ACTUAL — validate StorageGb against product max via DB
-
-            // TODO: REPLACE WITH ACTUAL — vault validation
-            // VaultId (int) and Vault (array) must be validated against the configured vault list
-            // for this product/category. Requires a DB lookup — no static check possible here.
         }
 
         return errors;

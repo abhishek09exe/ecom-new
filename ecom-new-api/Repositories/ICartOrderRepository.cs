@@ -5,9 +5,7 @@ namespace ecom_new_api.Repositories;
 
 /// <summary>
 /// Data-access contract for cart orders.
-/// Each method maps directly to one or more stored procedures.
-/// Swap MockCartOrderRepository for a real EF Core / SqlClient implementation
-/// once DB access is available.
+/// Each method maps directly to one stored procedure.
 ///
 /// Note on identifiers: both usp_cart_select_cart_order and usp_cart_select_cart_order_item
 /// take @vendor_order_code (not cart_order_id) as their lookup key. All read/select
@@ -15,32 +13,51 @@ namespace ecom_new_api.Repositories;
 /// </summary>
 public interface ICartOrderRepository
 {
-    // ── Write path ──────────────────────────────────────────────────────────────
+    // ── Write path (per stored procedure) ──────────────────────────────────────
 
     /// <summary>
-    /// Inserts the cart header and all related rows, then returns the generated vendor_order_code.
-    ///
-    /// Maps to:
-    ///   usp_cart_insert_cart_order(@site_id, @locale, @user_ip, @cart_extension_json,
-    ///       @response_code OUTPUT, @message OUTPUT)
-    ///   usp_cart_insert_cart_order_item(@vendor_order_code, @item_json, @bundle_json,
-    ///       @response_code OUTPUT, @message OUTPUT)  — called once per item in request.Items
-    ///
-    /// Returns the generated vendor_order_code (used as the key for all subsequent reads).
+    /// EF Core equivalent of usp_cart_insert_cart_order.
+    /// Inserts cart_order header and optional partner/route/message/cart_json rows.
+    /// Returns the generated vendor_order_code.
+    /// </summary>
+    Task<string> InsertCartOrderHeaderAsync(
+        CartOrderCreateRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// EF Core equivalent of usp_cart_insert_cart_order_item.
+    /// Inserts a single cart_order_item row for the given order.
+    /// </summary>
+    Task InsertCartOrderItemAsync(
+        int cartOrderId, string vendorOrderCode, CartOrderItemRequest item, int lineItem, CancellationToken ct = default);
+
+    // ── Read path (per stored procedure) ───────────────────────────────────────
+
+    /// <summary>
+    /// EF Core equivalent of usp_cart_select_cart_order.
+    /// Returns the cart header joined with partner, currency, and cart_json.
+    /// </summary>
+    Task<CartOrderResponse?> SelectCartOrderHeaderAsync(
+        string vendorOrderCode, CancellationToken ct = default);
+
+    /// <summary>
+    /// EF Core equivalent of usp_cart_select_cart_order_item.
+    /// Returns all item rows with product info, pricing, and JSON-derived fields.
+    /// </summary>
+    Task<List<CartOrderItemResponse>> SelectCartOrderItemsAsync(
+        string vendorOrderCode, CancellationToken ct = default);
+
+    // ── Composite operations (used by the service layer) ───────────────────────
+
+    /// <summary>
+    /// Calls InsertCartOrderHeaderAsync then InsertCartOrderItemAsync for each item.
+    /// Returns the generated vendor_order_code.
     /// </summary>
     Task<string> InsertCartOrderAsync(
         CartOrderCreateRequest request, CancellationToken ct = default);
 
     /// <summary>
-    /// Re-reads the full cart aggregate (header + items) after insert/update.
-    ///
-    /// Maps to:
-    ///   usp_cart_select_cart_order(@vendor_order_code) — header row
-    ///   usp_cart_select_cart_order_item(@vendor_order_code) — item rows
-    ///
-    /// This is what the API returns — NOT the raw insert output.
-    /// The frontend depends on computed fields (pricing, equivalent_year_price, vault, etc.)
-    /// that are only present in this re-read.
+    /// Calls SelectCartOrderHeaderAsync + SelectCartOrderItemsAsync and combines them
+    /// into a fully hydrated CartOrderResponse (the shape the API returns).
     /// </summary>
     Task<CartOrderResponse?> SelectCartOrderAsync(
         string vendorOrderCode, CancellationToken ct = default);

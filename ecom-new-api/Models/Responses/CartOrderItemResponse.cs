@@ -23,8 +23,8 @@ public sealed class CartOrderItemResponse
     /// <summary>cart_order_item.quantity</summary>
     public int Quantity { get; init; }
 
-    /// <summary>product_seat.seats (from product JOIN)</summary>
-    public int? Seats { get; init; }
+    /// <summary>product_seat.seats — number of licence seats per product unit.</summary>
+    public int? LicenseSeats { get; set; }
 
     /// <summary>
     /// Storage in GB. Sourced from cart_order_item.storage_gb, falling back to
@@ -205,5 +205,67 @@ public sealed class CartOrderItemResponse
 
     /// <summary>cart_order_item_json.cart_order_item_json — raw item-level extension JSON.</summary>
     public string? CartOrderItemJson { get; init; }
+
+    // ── Computed sub-totals (quantity × unit price) ─────────────────────────────────
+
+    /// <summary>list_price × quantity</summary>
+    public decimal? SubTotalListAmount { get; set; }
+
+    /// <summary>unit_price × quantity</summary>
+    public decimal? SubTotalAmount { get; set; }
+
+    /// <summary>unit_price_pre_vat × quantity</summary>
+    public decimal? SubTotalAmountPreVat { get; set; }
+
+    /// <summary>equivalent_year_price × quantity</summary>
+    public decimal? SubTotalEquivalentYearPrice { get; set; }
+
+    /// <summary>Estimated monthly price for usage-based pricing. Null for annual plans.</summary>
+    public decimal? EstimatedMonthlyPrice { get; set; }
+
+    // ── Formatted price strings ───────────────────────────────────────────────────────────
+
+    public string? EquivalentYearPriceFmt { get; set; }
+    public string? ListPriceFmt { get; set; }
+    public string? UnitPriceFmt { get; set; }
+    public string? UnitPricePreVatFmt { get; set; }
+    public string? UsagePriceFmt { get; set; }
+    public string? SubTotalEquivalentYearPriceFmt { get; set; }
+    public string? SubTotalListAmountFmt { get; set; }
+    public string? SubTotalAmountFmt { get; set; }
+    public string? SubTotalAmountPreVatFmt { get; set; }
+
+    // ── Upsells ───────────────────────────────────────────────────────────────────────
+
+    /// <summary>Upsell offers for this item. Empty array if none.</summary>
+    public List<object> Upsells { get; set; } = [];
+
+    /// <summary>Upsell modal data. Empty array if none.</summary>
+    public List<object> UpsellModal { get; set; } = [];
+
+    // ── Complex computed objects (require additional DB lookups) ───────────────────
+
+    /// <summary>
+    /// License profile keyed by license_category_name.
+    /// TODO: Populate from usp_cart_select_license_profile equivalent.
+    /// </summary>
+    public object? LicenseProfile { get; set; }
+
+    /// <summary>
+    /// Available options (years_list, license_category_list, pricing_level_list, vault).
+    /// TODO: Populate from product metadata queries.
+    /// </summary>
+    public object? Options { get; set; }
+
+    /// <summary>
+    /// Product features list.
+    /// TODO: Populate from product_feature joins.
+    /// </summary>
+    public List<string>? ProductFeatureList { get; set; }
+
+    // ── Message key (order-level key propagated to each item) ──────────────────────
+
+    /// <summary>Message key from the order's cart_order_message record.</summary>
+    public string? MessageKey { get; set; }
 }
 

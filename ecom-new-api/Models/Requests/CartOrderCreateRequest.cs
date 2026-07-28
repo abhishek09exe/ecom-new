@@ -44,7 +44,7 @@ public sealed class CartOrderCreateRequest
     /// Keycode / message key entered by the user.
     /// If this resolves to a quote key the service must pivot to an UPDATE rather than INSERT.
     /// </summary>
-    public string? Key { get; init; }
+    public string? MessageKey { get; init; }
 
     /// <summary>Pre-applied discount identifier.</summary>
     public int? CartDiscountId { get; init; }

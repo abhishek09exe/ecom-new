@@ -215,5 +215,11 @@ public sealed class CartOrderItemRequest
     /// Maps to: @bundle_json → $.product_pricing_level_id (TINYINT).
     /// </summary>
     public byte? ProductPricingLevelId { get; init; }
+
+    /// <summary>
+    /// Message key for this specific line item (may differ from the order-level key).
+    /// Sent by the client; stored in cart_order_message when not null.
+    /// </summary>
+    public string? MessageKey { get; init; }
 }
 

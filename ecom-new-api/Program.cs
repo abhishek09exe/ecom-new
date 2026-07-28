@@ -1,18 +1,29 @@
+using ecom_new_api.Data;
+using ecom_new_api.Infrastructure;
 using ecom_new_api.Repositories;
 using ecom_new_api.Services;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // ── MVC / Swagger ───────────────────────────────────────────────────────────────
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        options.JsonSerializerOptions.PropertyNamingPolicy = SnakeCaseNamingPolicy.Instance;
+        options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
+    });
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// ── EF Core DbContext ────────────────────────────────────────────────────────────
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(
+        builder.Configuration.GetConnectionString("EcomDb"),
+        sql => sql.CommandTimeout(60)));
+
 // ── Repositories ────────────────────────────────────────────────────────────────
-// TODO: REPLACE WITH ACTUAL — swap MockCartOrderRepository for the real EF Core / SqlClient
-// implementation once DB access is available.
-// e.g. builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
-builder.Services.AddScoped<ICartOrderRepository, MockCartOrderRepository>();
+builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
 
 // ── Services ────────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderService, CartOrderService>();

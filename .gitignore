@@ -1,3 +1,5 @@
 /ecom-new-api/obj
 /ecom-new-api/bin
+/ecom-new-api.Tests/obj
+/ecom-new-api.Tests/bin
 .vs

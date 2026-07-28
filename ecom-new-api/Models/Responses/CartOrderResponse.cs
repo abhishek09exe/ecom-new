@@ -81,9 +81,55 @@ public sealed class CartOrderResponse
     /// <summary>cart_json.cart_json — the raw extension JSON stored at order creation time.</summary>
     public string? CartJson { get; init; }
 
-    // ── Hydrated line items (from usp_cart_select_cart_order_item) ─────────────
+    // ── Hydrated line items grouped by cart_item_bundle_id ─────────────────────────
 
-    /// <summary>Line items populated from usp_cart_select_cart_order_item re-read.</summary>
-    public List<CartOrderItemResponse> Items { get; init; } = [];
+    /// <summary>
+    /// Items grouped by cart_item_bundle_id (key = bundle id as string).
+    /// Matches the real API response shape: { "1": [ {...}, {...} ], "2": [ {...} ] }
+    /// </summary>
+    public Dictionary<string, List<CartOrderItemResponse>> Items { get; set; } = new();
+
+    // ── Route (from cart_order_route) ──────────────────────────────────────────────
+
+    /// <summary>Cart routing URL object. Built from routing_action + message_key.</summary>
+    public CartOrderRouteResponse? Route { get; set; }
+
+    // ── Top-level status flags ─────────────────────────────────────────────────────────
+
+    /// <summary>Whether this order was created via an external (partner API) path.</summary>
+    public bool IsExternal { get; set; }
+
+    /// <summary>Customer data object (populated separately). Always null on create.</summary>
+    public object? Customers { get; set; }
+
+    /// <summary>CyberSource session object (populated by payment processing). Always null on create.</summary>
+    public object? Cybersource { get; set; }
+
+    /// <summary>Whether the order uses Paymentech payment processing.</summary>
+    public bool UsePaymentech { get; set; }
+
+    /// <summary>Masked account e-mail. Null until account is linked.</summary>
+    public string? SafeAccountEmail { get; set; }
+
+    // ── Formatted monetary amounts ───────────────────────────────────────────────────
+
+    /// <summary>SubTotalAmount formatted as currency string (e.g. "$294.00").</summary>
+    public string? SubTotalAmountFmt { get; set; }
+
+    /// <summary>TaxAmount formatted as currency string (e.g. "$0.00").</summary>
+    public string? TaxAmountFmt { get; set; }
+
+    /// <summary>TotalAmount formatted as currency string (e.g. "$294.00").</summary>
+    public string? TotalAmountFmt { get; set; }
+
+    /// <summary>OfferAmount formatted as currency string (e.g. "$0.00").</summary>
+    public string? OfferAmountFmt { get; set; }
+}
+
+/// <summary>Route navigation URL for the cart checkout flow.</summary>
+public sealed class CartOrderRouteResponse
+{
+    /// <summary>Full URL to the cart routing action page.</summary>
+    public string? Route { get; init; }
 }
 

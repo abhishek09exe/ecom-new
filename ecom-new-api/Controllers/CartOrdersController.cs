@@ -39,8 +39,8 @@ public sealed class CartOrdersController : ControllerBase
     /// Called by the frontend JS when a user clicks "Add to Cart."
     /// </summary>
     [HttpPost("cart-orders")]
-    [ProducesResponseType(typeof(ApiResponse<CartOrderResponse>), StatusCodes.Status201Created)]
-    [ProducesResponseType(typeof(ApiResponse<CartOrderResponse>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(CartOrderResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> CreateCartOrder(
@@ -58,7 +58,18 @@ public sealed class CartOrdersController : ControllerBase
         // request.TrxRc = (string?)HttpContext.Items["TrxRc"];
 
         var result = await _service.CreateCartOrderAsync(request, ct);
-        return MapResult(result, created: true);
+
+        return result.Kind switch
+        {
+            ServiceResultKind.Ok =>
+                StatusCode(StatusCodes.Status201Created, result.Data!),
+
+            ServiceResultKind.ValidationError =>
+                BadRequest(new { errors = result.ValidationErrors }),
+
+            _ => StatusCode(StatusCodes.Status500InternalServerError,
+                    new { error = result.ErrorMessage ?? "An unexpected error occurred" })
+        };
     }
 
     // ── GET /license-options ────────────────────────────────────────────────────
