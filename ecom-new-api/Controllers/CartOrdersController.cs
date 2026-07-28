@@ -61,58 +61,6 @@ public sealed class CartOrdersController : ControllerBase
         return MapResult(result, created: true);
     }
 
-    // ── GET /license-options ────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Fetches license + available products for a keycode.
-    /// First call made by the interstitial cart page on load.
-    /// </summary>
-    [HttpGet("/license-options")]
-    [ProducesResponseType(typeof(ApiResponse<LicenseOptionsResponse>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ApiResponse<LicenseOptionsResponse>), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(ApiResponse<LicenseOptionsResponse>), StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetLicenseOptions(
-        [FromQuery] string keycode,
-        CancellationToken ct)
-    {
-        var result = await _service.GetLicenseOptionsAsync(keycode, ct);
-        return MapResult(result);
-    }
-
-    // ── GET /configure ──────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Returns renewal product options for a license.
-    /// Drives the RENEW tab on the configurator page.
-    /// </summary>
-    [HttpGet("/configure")]
-    [ProducesResponseType(typeof(ApiResponse<ConfigureResponse>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ApiResponse<ConfigureResponse>), StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetConfigure(
-        [FromQuery] string keycode,
-        CancellationToken ct)
-    {
-        var result = await _service.GetConfigureAsync(keycode, ct);
-        return MapResult(result);
-    }
-
-    // ── GET /upgrade ────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Returns upgrade product options for a license.
-    /// Drives the upgrade tab on the configurator page.
-    /// </summary>
-    [HttpGet("/upgrade")]
-    [ProducesResponseType(typeof(ApiResponse<UpgradeResponse>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ApiResponse<UpgradeResponse>), StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetUpgrade(
-        [FromQuery] string keycode,
-        CancellationToken ct)
-    {
-        var result = await _service.GetUpgradeAsync(keycode, ct);
-        return MapResult(result);
-    }
-
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
     private IActionResult MapResult<T>(ServiceResult<T> result, bool created = false)

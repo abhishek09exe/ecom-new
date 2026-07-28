@@ -1,5 +1,7 @@
+using ecom_new_api.Data;
 using ecom_new_api.Repositories;
 using ecom_new_api.Services;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -8,11 +10,15 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// ── Database (EF Core + SQL Server) ─────────────────────────────────────────────
+// Reads "CartDb" from appsettings.json / appsettings.Development.json.
+// Required by CartOrderRepository; not used by MockCartOrderRepository.
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("CartDb")));
+
 // ── Repositories ────────────────────────────────────────────────────────────────
-// TODO: REPLACE WITH ACTUAL — swap MockCartOrderRepository for the real EF Core / SqlClient
-// implementation once DB access is available.
-// e.g. builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
-builder.Services.AddScoped<ICartOrderRepository, MockCartOrderRepository>();
+builder.Services.AddScoped<ICartOrderRepository, EfCartOrderRepository>();
+// builder.Services.AddScoped<ICartOrderRepository, MockCartOrderRepository>();
 
 // ── Services ────────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderService, CartOrderService>();

@@ -18,10 +18,10 @@ public sealed class CartOrderService : ICartOrderService
     // so they don't need a code change when the allowed values change.
 
     private static readonly HashSet<string> AllowedSiteIds =
-        ["gsm", "webroot", "MOCK_SITE"]; // TODO: REPLACE WITH ACTUAL — from DB/config
+        ["gsm", "webroot", "ecm", "WRCART", "ecom", "test", "default"]; // TODO: REPLACE WITH ACTUAL — from DB/config (G23)
 
     private static readonly HashSet<string> AllowedLicenseCategoryNames =
-        ["SOHO", "SMB", "ENT", "MOCK_CATEGORY"]; // TODO: REPLACE WITH ACTUAL — from DB/config
+        ["SAEP", "SAAP", "SASP", "SOHO", "SMB", "ENT"]; // TODO: REPLACE WITH ACTUAL — from DB/config
 
     private static readonly HashSet<int> AllowedYears =
         [1, 2, 3]; // TODO: REPLACE WITH ACTUAL — from DB/config
@@ -72,44 +72,6 @@ public sealed class CartOrderService : ICartOrderService
         }
 
         return ServiceResult<CartOrderResponse>.Ok(order);
-    }
-
-    // ── GET endpoints ───────────────────────────────────────────────────────────
-
-    public async Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsAsync(
-        string keycode, CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(keycode))
-            return ServiceResult<LicenseOptionsResponse>.Invalid(["keycode is required"]);
-
-        var result = await _repo.SelectLicenseOptionsAsync(keycode, ct);
-        return result is null
-            ? ServiceResult<LicenseOptionsResponse>.NotFound($"No license found for keycode '{keycode}'")
-            : ServiceResult<LicenseOptionsResponse>.Ok(result);
-    }
-
-    public async Task<ServiceResult<ConfigureResponse>> GetConfigureAsync(
-        string keycode, CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(keycode))
-            return ServiceResult<ConfigureResponse>.Invalid(["keycode is required"]);
-
-        var result = await _repo.SelectConfigureAsync(keycode, ct);
-        return result is null
-            ? ServiceResult<ConfigureResponse>.NotFound($"No configuration found for keycode '{keycode}'")
-            : ServiceResult<ConfigureResponse>.Ok(result);
-    }
-
-    public async Task<ServiceResult<UpgradeResponse>> GetUpgradeAsync(
-        string keycode, CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(keycode))
-            return ServiceResult<UpgradeResponse>.Invalid(["keycode is required"]);
-
-        var result = await _repo.SelectUpgradeAsync(keycode, ct);
-        return result is null
-            ? ServiceResult<UpgradeResponse>.NotFound($"No upgrade options found for keycode '{keycode}'")
-            : ServiceResult<UpgradeResponse>.Ok(result);
     }
 
     // ── Validation ──────────────────────────────────────────────────────────────

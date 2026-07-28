@@ -37,7 +37,7 @@ public sealed class CartOrderResponse
     public decimal? TaxAmount { get; init; }
 
     /// <summary>cart_order.sales_order_date</summary>
-    public DateTime SalesOrderDate { get; init; }
+    public DateTime? SalesOrderDate { get; init; }
 
     /// <summary>cart_order.locale (CHAR 5, e.g. "en-US")</summary>
     public string Locale { get; init; } = default!;
@@ -55,7 +55,7 @@ public sealed class CartOrderResponse
     public string? ModifiedBy { get; init; }
 
     /// <summary>cart_order.cart_order_status_id</summary>
-    public int CartOrderStatusId { get; init; }
+    public byte CartOrderStatusId { get; init; }
 
     /// <summary>cart_order.user_ip — always server-set, never client-supplied.</summary>
     public string? UserIp { get; init; }

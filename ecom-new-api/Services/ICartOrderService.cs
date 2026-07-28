@@ -17,13 +17,4 @@ public interface ICartOrderService
     /// </summary>
     Task<ServiceResult<CartOrderResponse>> CreateCartOrderAsync(
         CartOrderCreateRequest request, CancellationToken ct = default);
-
-    Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsAsync(
-        string keycode, CancellationToken ct = default);
-
-    Task<ServiceResult<ConfigureResponse>> GetConfigureAsync(
-        string keycode, CancellationToken ct = default);
-
-    Task<ServiceResult<UpgradeResponse>> GetUpgradeAsync(
-        string keycode, CancellationToken ct = default);
 }

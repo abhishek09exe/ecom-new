@@ -61,7 +61,7 @@ public sealed class MockCartOrderRepository : ICartOrderRepository
             CurrencyCode = request.CurrencyCode ?? "USD", // TODO: REPLACE WITH ACTUAL — partner config fallback
             CurrencyId = 1,                               // TODO: REPLACE WITH ACTUAL — resolve from currency table
             CartOrderStatusId = 1,                        // TODO: REPLACE WITH ACTUAL — initial status from cart_order_status
-            SalesOrderDate = request.SalesOrderDate?.Date ?? now.Date,
+            SalesOrderDate = request.SalesOrderDate,
             InsertDate = now,
             InsertBy = "system",                          // TODO: REPLACE WITH ACTUAL — SUSER_SNAME() from SP
             UserIp = request.UserIp,
@@ -138,94 +138,6 @@ public sealed class MockCartOrderRepository : ICartOrderRepository
         // Mock: no existing quote carts — always returns null (insert path)
         // TODO: REPLACE WITH ACTUAL — see description above
         return Task.FromResult<string?>(null);
-    }
-
-    // ── Read path ───────────────────────────────────────────────────────────────
-
-    /// <inheritdoc/>
-    /// TODO: REPLACE WITH ACTUAL
-    /// Real implementation must call:
-    ///   usp_cart_select_message_key(@key) — resolves keycode → license record
-    ///   usp_license_select_license_by_id(@license_id) — license details (seats, expiry, category)
-    ///   usp_cart_select_license_profile(@license_id) — trial/full product profile
-    ///   usp_cart_select_license_billing_model(@license_id) — billing model tooltip data
-    public Task<LicenseOptionsResponse?> SelectLicenseOptionsAsync(
-        string keycode, CancellationToken ct = default)
-    {
-        // TODO: REPLACE WITH ACTUAL — see description above
-        var stub = new LicenseOptionsResponse
-        {
-            Keycode = keycode,
-            LicenseStatus = "MOCK_ACTIVE",
-            LicenseCategory = "MOCK_CATEGORY",
-            LicenseSeats = 1,
-            ExpirationDate = DateTime.UtcNow.AddYears(1),
-            ProductOptions =
-            [
-                new ProductOptionResponse
-                {
-                    ProductId = 1,
-                    ProductName = "Mock Product",
-                    LicenseCategoryName = "MOCK",
-                    Price = 9.99m,
-                    Years = 1,
-                    Seats = 1
-                }
-            ]
-        };
-        return Task.FromResult<LicenseOptionsResponse?>(stub);
-    }
-
-    /// <inheritdoc/>
-    /// TODO: REPLACE WITH ACTUAL
-    /// Real implementation must call:
-    ///   usp_partner_cart_select_order_page_details (renewal context)
-    ///   Returns: primary + secondary products, pricing, years, seats, storage options
-    public Task<ConfigureResponse?> SelectConfigureAsync(
-        string keycode, CancellationToken ct = default)
-    {
-        // TODO: REPLACE WITH ACTUAL — see description above
-        var stub = new ConfigureResponse
-        {
-            Keycode = keycode,
-            RenewalOptions =
-            [
-                new ProductOptionResponse
-                {
-                    ProductId = 10,
-                    ProductName = "Mock Renewal",
-                    Price = 49.99m,
-                    Years = 1
-                }
-            ]
-        };
-        return Task.FromResult<ConfigureResponse?>(stub);
-    }
-
-    /// <inheritdoc/>
-    /// TODO: REPLACE WITH ACTUAL
-    /// Real implementation must call:
-    ///   usp_product_select_license_category_upgrade
-    ///   Returns: available upgrade product options for this license category
-    public Task<UpgradeResponse?> SelectUpgradeAsync(
-        string keycode, CancellationToken ct = default)
-    {
-        // TODO: REPLACE WITH ACTUAL — see description above
-        var stub = new UpgradeResponse
-        {
-            Keycode = keycode,
-            UpgradeOptions =
-            [
-                new ProductOptionResponse
-                {
-                    ProductId = 20,
-                    ProductName = "Mock Upgrade",
-                    Price = 99.99m,
-                    Years = 1
-                }
-            ]
-        };
-        return Task.FromResult<UpgradeResponse?>(stub);
     }
 }
 
