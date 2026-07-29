@@ -14,7 +14,7 @@ public sealed class PartnerConfigurationPartner
     public int PartnerId { get; set; }
 
     [Column("partner_configuration_id")]
-    public int PartnerConfigurationId { get; set; }
+    public byte PartnerConfigurationId { get; set; }
 
     [Column("configuration_value")]
     [MaxLength(100)]

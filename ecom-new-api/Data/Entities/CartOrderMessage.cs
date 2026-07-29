@@ -13,9 +13,11 @@ public sealed class CartOrderMessage
     [Column("cart_order_id")]
     public int CartOrderId { get; set; }
 
+    [Column("status_id")]
+    public byte StatusId { get; set; }
+
     [Column("message_key")]
-    [MaxLength(36)]
-    public string? MessageKey { get; set; }
+    public Guid MessageKey { get; set; }
 
     [Column("message_campaign_id")]
     public int? MessageCampaignId { get; set; }

@@ -14,7 +14,7 @@ public sealed class ProductYears
     public int ProductId { get; set; }
 
     [Column("years")]
-    public decimal Years { get; set; }
+    public double Years { get; set; }
 
     // Navigation
     public Product? Product { get; set; }

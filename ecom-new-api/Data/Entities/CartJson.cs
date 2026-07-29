@@ -14,5 +14,5 @@ public sealed class CartJson
     public int CartOrderId { get; set; }
 
     [Column("cart_json")]
-    public string? Json { get; set; }
+    public string Json { get; set; } = default!;
 }

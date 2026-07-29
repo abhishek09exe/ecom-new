@@ -4,6 +4,7 @@ using ecom_new_api.Data.Entities;
 using ecom_new_api.Models.Requests;
 using ecom_new_api.Models.Responses;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace ecom_new_api.Repositories;
 
@@ -44,8 +45,9 @@ public sealed class CartOrderRepository : ICartOrderRepository
 
             var cartOrderId = await _db.CartOrder
                 .Where(o => o.VendorOrderCode == vendorOrderCode)
+                .OrderByDescending(o => o.CartOrderId)  // pick the row we just inserted
                 .Select(o => o.CartOrderId)
-                .SingleAsync(ct);
+                .FirstAsync(ct);
 
             for (var i = 0; i < request.Items.Count; i++)
             {
@@ -78,7 +80,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
         // Enrich items with computed sub-totals and formatted strings
         foreach (var item in items)
         {
-            item.MessageKey = messageKey;
+            item.MessageKey = messageKey?.ToString();
             item.SubTotalListAmount = item.ListPrice.HasValue ? item.ListPrice * item.Quantity : null;
             item.SubTotalAmount = item.UnitPrice.HasValue ? item.UnitPrice * item.Quantity : null;
             item.SubTotalAmountPreVat = item.UnitPricePreVat.HasValue ? item.UnitPricePreVat * item.Quantity : null;
@@ -116,7 +118,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
             ModifiedDate = header.ModifiedDate,
             ModifiedBy = header.ModifiedBy,
             CartOrderStatusId = header.CartOrderStatusId,
-            CurrencyId = header.CurrencyId,
+            CurrencyId = (int)header.CurrencyId,
             CurrencyCode = header.CurrencyCode,
             UserIp = header.UserIp,
             PartnerKey = header.PartnerKey,
@@ -207,7 +209,24 @@ public sealed class CartOrderRepository : ICartOrderRepository
             Locale = request.Locale,
             UserIp = request.UserIp,
             CurrencyId = currencyId.Value,
-            InsertDate = now
+            CartOrderStatusId = 1,  // 1 = pending/open; validated FK against cart_order_status
+            OfferAmount = 0m,
+            SubTotalAmount = 0m,
+            TaxAmount = 0m,
+            TotalAmount = 0m,
+            CartCustomerId = 0,       // sentinel: no customer yet; set via usp_cart_update_cart_customer
+            InvoiceInProcessId = 0,   // sentinel: payment workflow only
+            PRc = request.PRc ?? string.Empty,
+            PaymentMethod = "PENDING", // set at checkout time
+            SessionId = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            InsertDate = now,
+            ModifiedDate = now,
+            InsertBy = request.AccountUserName
+                       ?? request.CsiUserId?.ToString()
+                       ?? "system",  // fallback until AuthMiddleware is wired
+            ModifiedBy = request.AccountUserName
+                         ?? request.CsiUserId?.ToString()
+                         ?? "system" // fallback until AuthMiddleware is wired
         };
 
         _db.CartOrder.Add(order);
@@ -248,22 +267,22 @@ public sealed class CartOrderRepository : ICartOrderRepository
         }
 
         // 2.5) Insert cart_order_message (optional — when message_key is supplied)
-        var messageKey = string.IsNullOrWhiteSpace(request.MessageKey) ? null : request.MessageKey;
-        if (messageKey is not null)
+        if (!string.IsNullOrWhiteSpace(request.MessageKey) && Guid.TryParse(request.MessageKey, out var messageKeyGuid))
         {
             var licenseId = await _db.LicenseKey
-                .Where(k => k.Key == messageKey)
+                .Where(k => k.Key == request.MessageKey)
                 .Select(k => (int?)k.LicenseId)
                 .SingleOrDefaultAsync(ct);
 
             _db.CartOrderMessage.Add(new CartOrderMessage
             {
                 CartOrderId = order.CartOrderId,
-                MessageKey = messageKey,
+                MessageKey = messageKeyGuid,
                 MessageCampaignId = request.MessageCampaignId,
                 MessageCampaignPlatform = request.MessageCampaignPlatform,
                 CartDiscountId = request.CartDiscountId,
-                LicenseId = licenseId
+                LicenseId = licenseId,
+                StatusId = 1  // 1 = active
             });
         }
 
@@ -369,6 +388,9 @@ public sealed class CartOrderRepository : ICartOrderRepository
             unitPrice = listPrice;
         }
 
+        var insertBy = "system";  // insert identity — no auth context at item scope; set by caller if needed
+        var now2 = DateTime.UtcNow;
+
         var cartItem = new CartOrderItem
         {
             CartOrderId = cartOrderId,
@@ -376,20 +398,30 @@ public sealed class CartOrderRepository : ICartOrderRepository
             ProductId = item.ProductId,
             Quantity = item.Quantity ?? 1,
             StorageGb = item.StorageGb,
-            ListPrice = listPrice,
-            UnitPrice = unitPrice,
+            ListPrice = listPrice ?? 0m,       // NOT NULL; default 0 when no pricing row found
+            UnitPrice = unitPrice ?? 0m,       // NOT NULL; default 0 when no pricing row found
+            UnitPricePreVat = null,  // not provided at item level; set downstream when VAT is calculated
+            TaxItemTotal = 0m,
+            TaxExempt = false,
+            VendorId = 1,                      // 1 = Webroot default
+            InvoiceItemInProcessId = 0,        // sentinel: payment workflow only
             UsagePrice = item.UsagePrice,
             StartDate = item.StartDate,
             ExpirationDate = item.ExpirationDate,
             CartItemBundleId = item.CartItemBundleId,
-            ItemHierarchyId = item.ItemHierarchyId,
+            ItemHierarchyId = item.ItemHierarchyId.HasValue ? (byte?)item.ItemHierarchyId.Value : null,
             LicenseAttributeLicenseValue = item.LicenseAttributeLicenseValue,
             VendorOrderItemCode = item.VendorOrderItemCode,
             Discount = item.Discount,
             CartDiscountMethodId = item.CartDiscountMethodId,
             CartDiscountId = item.CartDiscountId,
             OpportunityLineItemId = item.OpportunityLineItemId,
-            ProductLocale = item.Locale
+            ProductLocale = item.Locale,
+            CartOrderStatusId = 1,  // 1 = pending/open
+            InsertDate = now2,
+            ModifiedDate = now2,
+            InsertBy = insertBy,
+            ModifiedBy = insertBy
         };
 
         _db.CartOrderItem.Add(cartItem);
@@ -402,7 +434,9 @@ public sealed class CartOrderRepository : ICartOrderRepository
             _db.CartOrderItemJson.Add(new CartOrderItemJson
             {
                 CartOrderItemId = cartItem.CartOrderItemId,
-                Json = itemJson
+                Json = itemJson,
+                InsertDate = DateTime.UtcNow,
+                ModifiedDate = DateTime.UtcNow
             });
             await _db.SaveChangesAsync(ct);
         }
@@ -443,7 +477,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
                 co.ModifiedDate,
                 co.ModifiedBy,
                 co.CartOrderStatusId,
-                CurrencyId = (int)cu.CurrencyId,
+                co.CurrencyId,
                 cu.CurrencyCode,
                 co.UserIp,
                 PartnerKey = p != null ? p.PartnerKey.ToString() : null,
@@ -469,7 +503,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
             ModifiedDate = row.ModifiedDate,
             ModifiedBy = row.ModifiedBy,
             CartOrderStatusId = row.CartOrderStatusId,
-            CurrencyId = row.CurrencyId,
+            CurrencyId = (int)row.CurrencyId,
             CurrencyCode = row.CurrencyCode,
             UserIp = row.UserIp,
             PartnerKey = row.PartnerKey,
@@ -487,7 +521,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
         var orderInfo = await _db.CartOrder
             .Where(o => o.VendorOrderCode == vendorOrderCode)
             .Select(o => new { o.CartOrderId, o.Locale })
-            .SingleOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(ct);
 
         if (orderInfo is null) return [];
 
@@ -495,10 +529,14 @@ public sealed class CartOrderRepository : ICartOrderRepository
         var rows = await (
             from i in _db.CartOrderItem
             join p in _db.Product on i.ProductId equals p.ProductId
-            join pf in _db.ProductFamily on p.ProductFamilyId equals pf.ProductFamilyId
-            join plp in _db.ProductLineProduct on p.ProductId equals plp.ProductId
-            join prl in _db.ProductLine on plp.ProductLineId equals prl.ProductLineId
-            join t in _db.ProductType on p.ProductTypeId equals t.ProductTypeId
+            join pf in _db.ProductFamily on p.ProductFamilyId equals pf.ProductFamilyId into pfJoin
+            from pf in pfJoin.DefaultIfEmpty()
+            join plp in _db.ProductLineProduct on p.ProductId equals plp.ProductId into plpJoin
+            from plp in plpJoin.DefaultIfEmpty()
+            join prl in _db.ProductLine on (plp != null ? plp.ProductLineId : -1) equals prl.ProductLineId into prlJoin
+            from prl in prlJoin.DefaultIfEmpty()
+            join t in _db.ProductType on p.ProductTypeId equals t.ProductTypeId into tJoin
+            from t in tJoin.DefaultIfEmpty()
             join ij in _db.CartOrderItemJson on i.CartOrderItemId equals ij.CartOrderItemId into ijJoin
             from ij in ijJoin.DefaultIfEmpty()
             join plc in _db.ProductLicenseCategory on p.ProductId equals plc.ProductId into plcJoin
@@ -546,13 +584,13 @@ public sealed class CartOrderRepository : ICartOrderRepository
                 // product
                 p.ProductDescription,
                 p.LicenseKeycodeTypeId,
-                // product_type
-                t.ProductTypeId,
-                t.ProductTypeDescription,
-                // product_family
-                pf.ProductFamilyDescription,
-                // product_line
-                prl.ProductLineCartType,
+                // product_type (LEFT JOIN — null safe)
+                ProductTypeId = t != null ? (int?)t.ProductTypeId : null,
+                ProductTypeDescription = t != null ? t.ProductTypeDescription : null,
+                // product_family (LEFT JOIN — null safe)
+                ProductFamilyDescription = pf != null ? pf.ProductFamilyDescription : null,
+                // product_line (LEFT JOIN — null safe)
+                ProductLineCartType = prl != null ? prl.ProductLineCartType : null,
                 // license_keycode_type
                 LicenseKeycodeTypeDescription = kt != null ? kt.LicenseKeycodeTypeDescription : null,
                 // license_category
@@ -562,7 +600,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
                 MinOrderQuantity = lc != null ? lc.MinOrderQuantity : null,
                 MaxOrderQuantity = lc != null ? lc.MaxOrderQuantity : null,
                 // product_years
-                Years = y != null ? (decimal?)y.Years : null,
+                Years = y != null ? (double?)y.Years : null,
                 // product_seat
                 Seats = s != null ? (int?)s.Seats : null,
                 // license_attribute_license_value
@@ -602,7 +640,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
             //      retail_price of the 1-year equivalent product in the item/cart locale
             // ──────────────────────────────────────────────────────────────────────────────────────────────────────
             decimal? equivalentYearPrice = null;
-            if (r.UnitPrice.HasValue && r.Years.HasValue)
+            if (r.Years.HasValue)
             {
                 var isUsagePricingModel2 = jp?.UsagePricingModelId == 2;
                 var itemTotalNull = jp?.ItemTotal is null;
@@ -610,7 +648,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
 
                 if (!(isUsagePricingModel2 && itemTotalNull && storageLessThan1TB))
                 {
-                    equivalentYearPrice = r.UnitPrice.Value * r.Years.Value;
+                    equivalentYearPrice = r.UnitPrice * (decimal)r.Years.Value;
                 }
             }
 
@@ -624,7 +662,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
                 LineItem = r.LineItem,
                 Quantity = r.Quantity,
                 StorageGb = r.StorageGb,
-                Years = r.Years,
+                Years = r.Years.HasValue ? (decimal?)r.Years.Value : null,
                 OrderItemOfferAmount = r.OrderItemOfferAmount,
                 EquivalentYearPrice = equivalentYearPrice,
                 ListPrice = r.ListPrice,
@@ -683,20 +721,21 @@ public sealed class CartOrderRepository : ICartOrderRepository
     public async Task<string?> FindExistingVendorOrderCodeByKeyAsync(
         string key, CancellationToken ct = default)
     {
+        if (!Guid.TryParse(key, out var keyGuid)) return null;
         return await (
             from m in _db.CartOrderMessage
             join o in _db.CartOrder on m.CartOrderId equals o.CartOrderId
-            where m.MessageKey == key
+            where m.MessageKey == keyGuid
             select o.VendorOrderCode
         ).FirstOrDefaultAsync(ct);
     }
 
     // ── Read-path stubs (implemented by downstream services in future) ────────────
 
-    private async Task<string?> GetOrderMessageKeyAsync(int cartOrderId, CancellationToken ct)
+    private async Task<Guid?> GetOrderMessageKeyAsync(int cartOrderId, CancellationToken ct)
         => await _db.CartOrderMessage
             .Where(m => m.CartOrderId == cartOrderId)
-            .Select(m => m.MessageKey)
+            .Select(m => (Guid?)m.MessageKey)
             .FirstOrDefaultAsync(ct);
 
     private static string GetCurrencySymbol(string? currencyCode) => currencyCode switch
@@ -728,17 +767,28 @@ public sealed class CartOrderRepository : ICartOrderRepository
     // ── Private helpers ───────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Generates the next sequential vendor order ID.
-    /// Equivalent to exec usp_next_id @Type=3 in the SP.
-    /// Uses MAX(cart_order_id) + 1 as a simple sequence. Replace with a SQL Server
-    /// SEQUENCE object or dedicated next-id table if the SP's exact behavior is required.
+    /// Generates the next sequential vendor order ID using the local DB SEQUENCE.
+    /// Equivalent to EXEC usp_next_id @Type=3 in the SP.
+    /// Uses ADO.NET directly — NEXT VALUE FOR cannot run inside an EF subquery.
+    /// To switch to QA: replace the SELECT with EXEC usp_next_id @Type=3 and read output param.
     /// </summary>
     private async Task<int> GetNextVendorOrderIdAsync(CancellationToken ct)
     {
-        var maxId = await _db.CartOrder
-            .Select(o => (int?)o.CartOrderId)
-            .MaxAsync(ct);
-        return (maxId ?? 0) + 1;
+        var conn = _db.Database.GetDbConnection();
+        var wasOpen = conn.State == System.Data.ConnectionState.Open;
+        if (!wasOpen) await conn.OpenAsync(ct);
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT NEXT VALUE FOR dbo.cart_order_next_id";
+
+        // Enlist in the current EF transaction if one is active —
+        // without this the command runs outside the transaction and SQL Server rejects it.
+        var currentTx = _db.Database.CurrentTransaction?.GetDbTransaction();
+        if (currentTx != null) cmd.Transaction = currentTx;
+
+        var result = (int)await cmd.ExecuteScalarAsync(ct)!;
+        if (!wasOpen) await conn.CloseAsync();
+        return result;
     }
 
     /// <summary>
@@ -769,7 +819,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
     private static string? BuildCartExtensionJson(CartOrderCreateRequest r)
     {
         // Only store if at least one optional extension field was provided
-        if (r.CurrencyCode is null && r.VendorOrderCode is null && r.PartnerKey is null
+        if (r.CurrencyCode is null && r.PartnerKey is null
             && r.AccountUserName is null && r.RoutingAction is null && r.MessageKey is null
             && r.MessageCampaignId is null && r.MessageCampaignPlatform is null
             && r.CartDiscountId is null && r.SalesOrderDate is null)
@@ -780,7 +830,6 @@ public sealed class CartOrderRepository : ICartOrderRepository
         return JsonSerializer.Serialize(new
         {
             currency_code = r.CurrencyCode,
-            vendor_order_code = r.VendorOrderCode,
             partner_key = r.PartnerKey,
             account_user_name = r.AccountUserName,
             routing_action = r.RoutingAction,

@@ -14,5 +14,11 @@ public sealed class CartOrderItemJson
     public int CartOrderItemId { get; set; }
 
     [Column("cart_order_item_json")]
-    public string? Json { get; set; }
+    public string Json { get; set; } = default!;
+
+    [Column("insert_date")]
+    public DateTime InsertDate { get; set; }
+
+    [Column("modified_date")]
+    public DateTime ModifiedDate { get; set; }
 }

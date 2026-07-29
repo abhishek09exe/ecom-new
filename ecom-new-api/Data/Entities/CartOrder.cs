@@ -14,17 +14,34 @@ public sealed class CartOrder
     [MaxLength(100)]
     public string VendorOrderCode { get; set; } = default!;
 
+    [Column("cart_customer_id")]
+    public int CartCustomerId { get; set; } = 0;  // sentinel: no customer yet at cart creation
+
+    [Column("invoice_in_process_id")]
+    public int InvoiceInProcessId { get; set; } = 0;  // sentinel: payment workflow, not cart creation
+
     [Column("order_type")]
-    [MaxLength(65)]
-    public string? OrderType { get; set; }
+    [MaxLength(30)]
+    public string OrderType { get; set; } = default!;
 
     [Column("site_id")]
     [MaxLength(65)]
     public string SiteId { get; set; } = default!;
 
     [Column("site_url")]
-    [MaxLength(65)]
-    public string? SiteUrl { get; set; }
+    [MaxLength(1025)]
+    public string SiteUrl { get; set; } = default!;
+
+    [Column("p_rc")]
+    [MaxLength(50)]
+    public string PRc { get; set; } = string.Empty;
+
+    [Column("payment_method")]
+    [MaxLength(255)]
+    public string PaymentMethod { get; set; } = "PENDING";
+
+    [Column("session_id")]
+    public long SessionId { get; set; }
 
     [Column("offer_amount")]
     public decimal? OfferAmount { get; set; }
@@ -33,7 +50,7 @@ public sealed class CartOrder
     public decimal? TotalAmount { get; set; }
 
     [Column("sub_total_amount")]
-    public decimal? SubTotalAmount { get; set; }
+    public decimal SubTotalAmount { get; set; }
 
     [Column("tax_amount")]
     public decimal? TaxAmount { get; set; }
@@ -42,7 +59,7 @@ public sealed class CartOrder
     public DateTime SalesOrderDate { get; set; }
 
     [Column("submission_date")]
-    public DateTime? SubmissionDate { get; set; }
+    public DateTime SubmissionDate { get; set; }
 
     [Column("locale")]
     [MaxLength(5)]
@@ -56,21 +73,21 @@ public sealed class CartOrder
     public byte CurrencyId { get; set; }
 
     [Column("cart_order_status_id")]
-    public int CartOrderStatusId { get; set; }
+    public byte CartOrderStatusId { get; set; }
 
     [Column("insert_date")]
     public DateTime InsertDate { get; set; }
 
     [Column("insert_by")]
-    [MaxLength(128)]
-    public string? InsertBy { get; set; }
+    [MaxLength(50)]
+    public string InsertBy { get; set; } = default!;
 
     [Column("modified_date")]
-    public DateTime? ModifiedDate { get; set; }
+    public DateTime ModifiedDate { get; set; }
 
     [Column("modified_by")]
-    [MaxLength(128)]
-    public string? ModifiedBy { get; set; }
+    [MaxLength(50)]
+    public string ModifiedBy { get; set; } = default!;
 
     // Navigation
     public CartOrderPartner? CartOrderPartner { get; set; }

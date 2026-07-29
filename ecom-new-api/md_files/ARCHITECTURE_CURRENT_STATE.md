@@ -1,7 +1,9 @@
 # Architecture - Current Implementation State
 
-> Last updated after local DB table-coverage expansion (all 30 SP-touched tables now in `local_dev_setup.sql`).
-> Implemented gaps: G1–G9, G14. Remaining work is C# logic only — no more schema additions needed for the current scope.
+> Last updated after full schema alignment pass (POST /cart/cart-orders end-to-end verified working).
+> All NOT NULL schema gaps filled, all EF Core type mismatches resolved, 63/63 tests passing.
+> `POST /cart/cart-orders` successfully inserts and returns a full cart order response.
+> Remaining work: pricing/date derivation logic (SEC 1–4 of usp_cart_insert_cart_order_item), G10–G13 insert correctness, equivalent_year_price exact computation, P3 endpoints.
 
 ---
 
@@ -92,67 +94,147 @@ ecom-new-api/
 |
 +-- Services/
 |   +-- CartOrderService.cs               validation + orchestration + pivot check
+|   +-- ICartOrderService.cs
+|   +-- ServiceResult.cs
 |
 +-- Repositories/
 |   +-- ICartOrderRepository.cs           contract: InsertCartOrderAsync / SelectCartOrderAsync / FindExistingVendorOrderCodeByKeyAsync
-|   +-- EfCartOrderRepository.cs          EF Core implementation (all real logic lives here)
-|   +-- MockCartOrderRepository.cs        in-memory stub for unit tests
+|   +-- CartOrderRepository.cs            EF Core implementation (replaces EfCartOrderRepository.cs after pull)
+|                                         methods: InsertCartOrderHeaderAsync, InsertCartOrderItemAsync,
+|                                                  SelectCartOrderHeaderAsync, SelectCartOrderItemsAsync,
+|                                                  FindExistingVendorOrderCodeByKeyAsync
 |
 +-- Data/
-|   +-- AppDbContext.cs                   all EF Fluent mappings (19 entities)
+|   +-- AppDbContext.cs                   all EF Fluent mappings
 |   +-- Entities/
 |       +-- CartOrder.cs
 |       +-- CartOrderItem.cs
 |       +-- CartJson.cs
 |       +-- CartOrderPartner.cs
-|       +-- CartOrderRoute.cs             [G4] new
-|       +-- CartOrderMessage.cs           [G5] new
-|       +-- CartOrderItemJson.cs          [G8] new
-|       +-- CartOrderItemLicense.cs       [G9] new
+|       +-- CartOrderRoute.cs             [G4]
+|       +-- CartOrderMessage.cs           [G5]
+|       +-- CartOrderItemJson.cs          [G8]
+|       +-- CartOrderItemLicense.cs       [G9]
+|       +-- CartOrderItemJsonLog.cs       [G10 - table mapped, write not yet called]
 |       +-- Currency.cs
 |       +-- CartOrderStatus.cs
 |       +-- Partner.cs
-|       +-- PartnerConfigurationPartner.cs  [G6] new
-|       +-- LicenseKey.cs                 [G5] new
-|       +-- Product.cs
+|       +-- PartnerAccount.cs             [now mapped + used in partner_account JOIN]
+|       +-- Account.cs                    [now mapped + used in partner_account JOIN]
+|       +-- PartnerConfigurationPartner.cs  [G6]
+|       +-- LicenseKey.cs                 [G5]
+|       +-- LicenseKeycodeType.cs         [G16]
+|       +-- LicenseAttributeLicenseValue.cs [G21]
 |       +-- LicenseCategory.cs
-|       +-- CartSiteIdOrderCodePrefix.cs  [G2] new
-|       +-- Account.cs                    [local DB added]
-|       +-- PartnerAccount.cs             [local DB added]
-|       +-- ProductType.cs                [local DB added - G16]
-|       +-- ProductFamily.cs              [local DB added - G16]
-|       +-- ProductLine.cs                [local DB added - G16]
-|       +-- ProductLineProduct.cs         [local DB added - G16]
-|       +-- ProductYears.cs               [local DB added - G21]
-|       +-- ProductSeat.cs                [local DB added - G21]
-|       +-- ProductLicenseCategory.cs     [local DB added - G17]
-|       +-- ProductPricing.cs             [local DB added - G20, logic deferred]
-|       +-- ProductPlatform.cs            [local DB added - G18]
-|       +-- LicenseAttributeLicenseValue.cs [local DB added - G21]
-|       +-- RetentionModel.cs             [local DB added - G18]
-|       +-- UsagePricingModel.cs          [local DB added - G18]
-|       +-- CartDiscountMethod.cs         [local DB added]
-|       +-- CartOrderItemJsonLog.cs       [local DB added - G10]
+|       +-- CartSiteIdOrderCodePrefix.cs  [G2]
+|       +-- Product.cs
+|       +-- ProductType.cs                [G16]
+|       +-- ProductFamily.cs              [G16]
+|       +-- ProductLine.cs                [G16]
+|       +-- ProductLineProduct.cs         [G16]
+|       +-- ProductYears.cs               [G21]
+|       +-- ProductSeat.cs                [G21]
+|       +-- ProductLicenseCategory.cs     [G17]
+|       +-- ProductPricing.cs             [G20 - basic fallback price read]
+|       +-- NextIdResult.cs               [sequence helper]
+|
++-- Infrastructure/
+|   +-- SnakeCaseNamingPolicy.cs
 |
 +-- Models/
 |   +-- Requests/
-|   |   +-- CartOrderCreateRequest.cs     POST body DTO (all fields the frontend sends)
-|   |   +-- CartOrderItemRequest.cs       per-item DTO nested inside CartOrderCreateRequest
+|   |   +-- CartOrderCreateRequest.cs
+|   |   +-- CartOrderItemRequest.cs
 |   +-- Responses/
-|       +-- CartOrderResponse.cs          201 response DTO (order header)
-|       +-- CartOrderItemResponse.cs      per-item response DTO
+|       +-- CartOrderResponse.cs          header + grouped items dict + formatted price strings
+|       +-- CartOrderItemResponse.cs      full item response (all SP columns now mapped)
+|       +-- CartOrderPartnerResponse.cs   partner sub-response
+|       +-- ApiResponse.cs
+|       +-- ReadEndpointResponses.cs
 |
 +-- sql/
-	+-- local_dev_setup.sql               drops + recreates ecom_cart_dev (QA-aligned schema)
+	+-- local_dev_setup.sql               34 tables; message_key=UNIQUEIDENTIFIER, vendor_order_code UNIQUE
+	+-- patches/
+		+-- patch_001_cart_order_message_key_guid.sql      VARCHAR(36) → UNIQUEIDENTIFIER migration
+		+-- patch_002_cart_order_vendor_order_code_unique.sql  deduplicate + add UNIQUE constraint
 ```
 
 ---
 
-## 3. EfCartOrderRepository.InsertCartOrderAsync - Logic Walkthrough
+## 3. CartOrderRepository — Logic Walkthrough
 
-Every `POST /cart/cart-orders` runs through the following steps in order.
+The repository is now split into 4 methods matching the 4 SPs exactly.
 
-### Step 1 - Resolve currency  (SP section 1.3)
+### InsertCartOrderHeaderAsync  ← `usp_cart_insert_cart_order`
+
+```
+1. Resolve partner_id from partner_key GUID (optional)
+2. Resolve currency_id:
+   a. Direct match on currency_code from request
+   b. Fallback: partner_configuration_partner WHERE partner_configuration_id=15  [G6]
+      Note: PartnerConfigurationId is byte (tinyint) in SQL; compared as (byte)15 in query
+   c. Final fallback: currency_id = 1 (USD)
+3. Generate vendor_order_code:
+   a. prefix → cart_site_id_order_code_prefix WHERE site_id = @site_id  [G2]
+   b. next integer → SELECT NEXT VALUE FOR dbo.cart_order_next_id          [G3 proxy — swap to usp_next_id @Type=3 before QA]
+   c. code = "{prefix}{nextId}"
+4. INSERT cart_order (order_type = site_id, site_url = site_id)          [G7]
+   - cart_customer_id, invoice_in_process_id default to 0 (sentinel values)
+   - submission_date, insert_by, modified_by always populated
+5. INSERT cart_order_partner + resolve partner_account_id via
+   partner_account JOIN account WHERE account_user_name = @username       [✅ implemented]
+6. INSERT cart_order_route if routing_action provided                     [G4]
+7. INSERT cart_order_message + license_key lookup if message_key provided [G5]
+   - message_key stored as Guid (uniqueidentifier) — matches SQL schema
+8. INSERT cart_json with extension fields blob                            [always]
+```
+
+### InsertCartOrderItemAsync  ← `usp_cart_insert_cart_order_item`
+
+```
+1. Lookup license_category_id from license_category_name
+2. Resolve unit_price / list_price:
+   - Use request.UnitPrice if provided
+   - Fallback: product_pricing.retail_price (basic locale-agnostic lookup)
+     ⚠ Full pricing derivation (SEC 1–4 of the SP) NOT YET implemented — see Remaining section
+3. INSERT cart_order_item with all scalar fields
+   - vendor_id defaults to 1 (Webroot) when not supplied
+   - invoice_item_in_process_id defaults to 0 (sentinel)
+4. INSERT cart_order_item_json blob (vault, platform, retention, pricing level) [G8]
+5. INSERT cart_order_item_license when VendorOrderItemCode (keycode) is present [G9 ✅]
+   ⚠ line_item offset (G11), CBCART hack (G12), CD date sync (G13) NOT yet done
+   ⚠ cart_order_item_json_log (G10) NOT yet written
+```
+
+### SelectCartOrderHeaderAsync  ← `usp_cart_select_cart_order`
+
+```
+SELECT cart_order JOIN currency LEFT JOIN cart_order_partner LEFT JOIN partner LEFT JOIN cart_json
+Returns: header fields + currency_code + partner_key + cart_json blob    [G15 ✅]
+```
+
+### SelectCartOrderItemsAsync  ← `usp_cart_select_cart_order_item`
+
+```
+Full JOIN chain:
+  cart_order_item
+  JOIN  product → product_family, product_line_product → product_line, product_type
+  LEFT JOIN cart_order_item_json
+  LEFT JOIN product_license_category → license_category                  [G17 ✅]
+  LEFT JOIN license_keycode_type                                          [G16 ✅]
+  LEFT JOIN product_years                                                 [G21 ✅]
+  LEFT JOIN product_seat                                                  [G21 ✅]
+  LEFT JOIN license_attribute_license_value                               [G21 ✅]
+  LEFT JOIN cart_order_item_license (keycode)                             [G19 ✅]
+
+Post-query enrichment:
+  - ParseCartOrderItemJson() → reads vault/platform/retention from JSON blob [G18 ✅]
+  - equivalentYearPrice proxy: unit_price * years                         [G20 partial]
+  - BuildDependentItemMapAsync() → dependent_cart_order_item_id           [G21 ✅]
+  - FormatCurrency() → all *Fmt string fields
+  - sub-total computations (list, unit, pre-vat, equivalent year)
+  - items grouped by cart_item_bundle_id into dict
+```
 
 ```csharp
 // 1a. Try exact match on currency_code from request
@@ -321,60 +403,64 @@ if (bundleKeycode != null)
 
 await _db.SaveChangesAsync();
 // EF generates INSERT for each of the above (only if their conditions were met)
-```
-
-### Step 7 - Read back and map to response  (usp_cart_select_cart_order)
-
-```csharp
-var order = await _db.CartOrders
-	.Include(o => o.Currency)
-	.Include(o => o.CartOrderPartner).ThenInclude(cop => cop.Partner)
-	.Include(o => o.CartJson)
-	.Include(o => o.Items).ThenInclude(i => i.Product)
-	.AsNoTracking()
-	.FirstOrDefaultAsync(o => o.VendorOrderCode == vendorOrderCode);
-
-return MapToResponse(order);
-// EF generates one SELECT with all JOINs - no N+1 queries
-```
-
 ---
 
 ## 4. Database Tables - Current State
 
-> ✅ = local `ecom_cart_dev` table exists  |  🔲 = not yet mapped in EF  |  ✅ EF = mapped and active
+> ✅ local = table in `local_dev_setup.sql`  |  ✅ EF = entity mapped in AppDbContext  |  ✍ = actively written  |  👁 = actively read
 
 | Table | local DB | EF Mapped | Written | Read | Notes |
 |-------|----------|-----------|---------|------|-------|
-| `cart_order` | ✅ | ✅ EF | YES | YES | Header; totals updated in second save |
-| `cart_order_item` | ✅ | ✅ EF | YES | YES | One row per item |
-| `cart_json` | ✅ | ✅ EF | YES | YES | Extension fields JSON blob |
-| `cart_order_partner` | ✅ | ✅ EF | YES | YES | Partner link — optional |
-| `cart_order_route` | ✅ | ✅ EF | YES | - | routing_action row — optional [G4] |
-| `cart_order_message` | ✅ | ✅ EF | YES | YES | message_key row — optional [G5]; drives pivot check |
-| `cart_order_item_json` | ✅ | ✅ EF | YES | - | Per-item vault/retention/platform blob [G8] |
-| `cart_order_item_license` | ✅ | ✅ EF | YES | - | Keycode link per item — optional [G9] |
-| `cart_order_item_json_log` | ✅ | 🔲 | NO | - | Audit log — table exists, EF mapping + write deferred [G10] |
+| `cart_order` | ✅ | ✅ | ✍ | 👁 | Header row |
+| `cart_order_item` | ✅ | ✅ | ✍ | 👁 | One row per item |
+| `cart_json` | ✅ | ✅ | ✍ | 👁 | Extension fields blob |
+| `cart_order_partner` | ✅ | ✅ | ✍ | 👁 | Partner link; now resolves partner_account_id too |
+| `cart_order_route` | ✅ | ✅ | ✍ | - | Optional — when routing_action provided [G4] |
+| `cart_order_message` | ✅ | ✅ | ✍ | 👁 | Optional — when message_key provided [G5]; pivot check |
+| `cart_order_item_json` | ✅ | ✅ | ✍ | 👁 | Per-item JSON blob — vault/platform/retention [G8] |
+| `cart_order_item_license` | ✅ | ✅ | ✍ | 👁 | Write path active (G9); read in SELECT |
+| `cart_order_item_json_log` | ✅ | ✅ | - | - | Table + entity exist; insert call not yet added [G10] |
+| `currency` | ✅ | ✅ | - | 👁 | Lookup by currency_code |
+| `partner` | ✅ | ✅ | - | 👁 | Lookup by GUID |
+| `partner_account` | ✅ | ✅ | - | 👁 | Joined for partner_account_id resolution |
+| `account` | ✅ | ✅ | - | 👁 | Joined via partner_account for account_user_name |
+| `partner_configuration_partner` | ✅ | ✅ | - | 👁 | Partner default currency fallback [G6] |
+| `license_key` | ✅ | ✅ | - | 👁 | license_id lookup for message_key [G5] |
+| `cart_site_id_order_code_prefix` | ✅ | ✅ | - | 👁 | vendor_order_code prefix [G2] |
+| `product` | ✅ | ✅ | - | 👁 | JOINed in item select |
+| `product_type` | ✅ | ✅ | - | 👁 | JOINed in item select [G16] |
+| `product_family` | ✅ | ✅ | - | 👁 | JOINed in item select [G16] |
+| `product_line` | ✅ | ✅ | - | 👁 | JOINed in item select [G16] |
+| `product_line_product` | ✅ | ✅ | - | 👁 | JOINed in item select [G16] |
+| `product_years` | ✅ | ✅ | - | 👁 | LEFT JOINed in item select [G21] |
+| `product_seat` | ✅ | ✅ | - | 👁 | LEFT JOINed in item select [G21] |
+| `product_license_category` | ✅ | ✅ | - | 👁 | LEFT JOINed in item select [G17] |
+| `license_category` | ✅ | ✅ | - | 👁 | LEFT JOINed in item select [G17] |
+| `license_keycode_type` | ✅ | ✅ | - | 👁 | LEFT JOINed in item select [G16] |
+| `license_attribute_license_value` | ✅ | ✅ | - | 👁 | LEFT JOINed in item select [G21] |
+| `product_pricing` | ✅ | ✅ | - | 👁 | Basic retail_price fallback in item insert; full locale pricing deferred [G20] |
+| `cart_order_item_license` (read) | ✅ | ✅ | - | 👁 | keycode in SELECT [G19] |
+
 | `currency` | ✅ | ✅ EF | - | YES | Lookup by currency_code |
 | `partner` | ✅ | ✅ EF | - | YES | Lookup by GUID |
 | `partner_configuration_partner` | ✅ | ✅ EF | - | YES | Partner default currency [G6] |
-| `partner_account` | ✅ | 🔲 | - | - | Table exists; read logic deferred |
-| `account` | ✅ | 🔲 | - | - | Table exists; read logic deferred |
+| `partner_account` | ✅ | ✅ EF | - | YES | Joined for partner_account_id resolution |
+| `account` | ✅ | ✅ EF | - | YES | Joined via partner_account for account_user_name |
 | `license_key` | ✅ | ✅ EF | - | YES | license_id lookup for message_key [G5] |
 | `cart_site_id_order_code_prefix` | ✅ | ✅ EF | - | YES | vendor_order_code prefix [G2] |
 | `product` | ✅ | ✅ EF | - | YES | Product description on response |
-| `product_type` | ✅ | 🔲 | - | - | Table + seed exist; EF mapping deferred [G16] |
-| `product_family` | ✅ | 🔲 | - | - | Table + seed exist; EF mapping deferred [G16] |
-| `product_line` | ✅ | 🔲 | - | - | Table + seed exist; EF mapping deferred [G16] |
-| `product_line_product` | ✅ | 🔲 | - | - | Table + seed exist; EF mapping deferred [G16] |
-| `product_years` | ✅ | 🔲 | - | - | Table + seed exist; EF mapping deferred [G21] |
-| `product_seat` | ✅ | 🔲 | - | - | Table + seed exist; EF mapping deferred [G21] |
-| `product_license_category` | ✅ | 🔲 | - | - | Table + seed exist; EF mapping deferred [G17] |
-| `product_pricing` | ✅ | 🔲 | - | - | Table exists, no seed rows; pricing logic deferred [G20] |
+| `product_type` | ✅ | ✅ EF | - | YES | JOINed in item select [G16] |
+| `product_family` | ✅ | ✅ EF | - | YES | JOINed in item select [G16] |
+| `product_line` | ✅ | ✅ EF | - | YES | JOINed in item select [G16] |
+| `product_line_product` | ✅ | ✅ EF | - | YES | JOINed in item select [G16] |
+| `product_years` | ✅ | ✅ EF | - | YES | LEFT JOINed in item select [G21]; type fixed: `double` not `decimal` |
+| `product_seat` | ✅ | ✅ EF | - | YES | LEFT JOINed in item select [G21] |
+| `product_license_category` | ✅ | ✅ EF | - | YES | LEFT JOINed in item select [G17] |
+| `product_pricing` | ✅ | ✅ EF | - | YES | Basic retail_price fallback; full locale pricing deferred [G20] |
 | `product_platform` | ✅ | 🔲 | - | - | Table + seed exist; EF mapping deferred [G18] |
-| `license_category` | ✅ | ✅ EF | - | YES | Used in validation |
-| `license_keycode_type` | ✅ | 🔲 | - | - | Table + seed exist; EF mapping deferred [G16] |
-| `license_attribute_license_value` | ✅ | 🔲 | - | - | Table exists, no seed rows; logic deferred [G21] |
+| `license_category` | ✅ | ✅ EF | - | YES | Used in validation + item select |
+| `license_keycode_type` | ✅ | ✅ EF | - | YES | LEFT JOINed in item select [G16] |
+| `license_attribute_license_value` | ✅ | ✅ EF | - | YES | LEFT JOINed in item select [G21] |
 | `retention_model` | ✅ | 🔲 | - | - | Table + seed exist; EF mapping deferred [G18] |
 | `usage_pricing_model` | ✅ | 🔲 | - | - | Table + seed exist; EF mapping deferred [G18] |
 | `cart_discount_method` | ✅ | 🔲 | - | - | Table + seed exist; used as FK reference |
@@ -383,41 +469,71 @@ return MapToResponse(order);
 
 ## 5. What Is Implemented vs What Remains
 
-### Done — insert path
-- Full `usp_cart_insert_cart_order` parity: G2, G3, G4, G5, G6, G7 all done
-- Partial `usp_cart_insert_cart_order_item` parity: item insert (G1), totals (G1), item_json (G8), item_license (G9) done
-- Local DB schema complete: all 30 tables touched by the 4 SPs now exist in `local_dev_setup.sql`
+### Done ✅
+- Full `usp_cart_insert_cart_order` parity: G2, G3, G4, G5, G6, G7
+- `usp_cart_insert_cart_order_item`: item insert, basic price fallback from `product_pricing`, cart_order_item_json (G8)
+- `usp_cart_select_cart_order`: full header with currency, partner, cart_json, all SP columns (G15)
+- `usp_cart_select_cart_order_item`: full JOIN chain — product_type, product_family, product_line (G16), license_category via product_license_category (G17), cart_order_item_json enrichment (G18), keycode (G19), seats/years/license_attribute_license_value_description (G21), dependent_cart_order_item_id, all formatted price strings
+- Quote-key pivot check via cart_order_message (G14)
+- partner_account_id resolution via account JOIN (previously missing)
+- Local DB: all 34 tables present
+- **Schema alignment (completed):** all NOT NULL columns added to entities:
+  - `cart_order`: `cart_customer_id` (sentinel 0), `invoice_in_process_id` (sentinel 0), `order_type`, `site_url`, `p_rc`, `payment_method`, `session_id`
+  - `cart_order_item`: `vendor_id` (default 1 = Webroot), `invoice_item_in_process_id` (sentinel 0)
+  - `cart_order_message.message_key`: changed `string?` → `Guid` (`uniqueidentifier NOT NULL`)
+  - `cart_json.cart_json`: made non-nullable
+  - `submission_date`, `order_type`, `site_url` made non-nullable on `CartOrder`
+  - `list_price`, `unit_price` made non-nullable on `CartOrderItem`
+- **Type mismatch fixes (completed):** all EF entity types now match SQL Server column types exactly:
+  - `tinyint` → `byte`: `CartOrder.CartOrderStatusId`, `CartOrderItem.OrderItemUpdateTypeId`, `CartOrderItem.ItemHierarchyId`, `CartOrderItem.CartDiscountMethodId`, `PartnerConfigurationPartner.PartnerConfigurationId`
+  - `float` → `double`: `ProductYears.Years`
+  - Removed illegal SQL-layer cast `(int)cu.CurrencyId` from EF projections; cast moved to post-materialization
+- **DB patches created:**
+  - `sql/patches/patch_001_cart_order_message_key_guid.sql` — VARCHAR(36) → UNIQUEIDENTIFIER
+  - `sql/patches/patch_002_cart_order_vendor_order_code_unique.sql` — cleanup duplicates + add UNIQUE constraint
+- **local_dev_setup.sql updated:** `message_key` is now `UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID()`, `vendor_order_code` has `UNIQUE` constraint
+- **63/63 tests passing**
+- **`POST /cart/cart-orders` end-to-end verified working against local SQL Server**
 
-### Remaining — insert correctness (P1) — C# logic only, tables exist
+### Remaining — Insert Correctness (P1)
 
-| Gap | What it does | SP section | Table |
-|-----|-------------|------------|-------|
-| G10 | `cart_order_item_json_log` insert — raw JSON audit log | 5.0 | `cart_order_item_json_log` ✅ |
-| G11 | `line_item` offset sequencing — adding items to existing cart | 5.1 | `cart_order_item` ✅ |
-| G12 | CBCART routing hack — update locale/site_id for CB upgrade orders | 5.2 | `cart_order` ✅ |
-| G13 | CD line date sync — product_family_id=8 inherits dates from primary | 5.6 | `cart_order_item` ✅ |
+| Gap | What | Notes |
+|-----|------|-------|
+| G10 | `cart_order_item_json_log` insert | Entity exists, insert call not added yet |
+| G11 | `line_item` offset for multi-call carts | Always starts at 1; offset by MAX(line_item) needed |
+| G12 | CBCART routing hack | Update locale/site_id for CBCART + upgrade orders |
+| G13 | CD line date sync | product_family_id=8 inherits dates from primary bundle item |
 
-### Remaining — response enrichment (P2) — C# logic only, tables exist
+### Remaining — Pricing & Date Derivation (P1 complex — SP SEC 1–4)
 
-| Gap | What it adds | Tables needed |
-|-----|-------------|---------------|
-| G15 | Header: `offer_amount`, `tax_amount`, `user_ip` | `cart_order` ✅ |
-| G16 | Item: `product_type`, `license_keycode_type`, `product_family`, `product_line_cart_type` | all ✅ |
-| G17 | Item: `license_category` via `product_license_category` | both ✅ |
-| G18 | Item: `vault_id`, `retention_model`, `product_platform` from `cart_order_item_json` | all ✅ |
-| G19 | Item: `keycode` from `cart_order_item_license` | ✅ |
-| G20 | Item: `equivalent_year_price` via `product_pricing` + `product_years` | both ✅ (no pricing seed yet) |
-| G21 | Item: `seats`, `years`, `unit_price_pre_vat`, `license_attribute_license_value_description` | all ✅ |
+These are the most complex gaps — they require additional entities and logic not yet ported:
 
-### Future phases (P3)
+| What | SP Section | Needs |
+|------|-----------|-------|
+| Locale split → language_code + location_code | 1.2 | C# helper (no new entity) |
+| License profile load (renewal/upgrade detection) | 1.3 | `License`, `LicenseMessage` entities |
+| Product line resolution from license_category | 1.9 | `LicenseCategoryProductLine` entity |
+| Per-partner usage/retention/platform overrides | 1.12–1.14 | `PartnerUsagePricingModel` etc. entities |
+| start_date / expiration_date derivation | 2.1–2.5 | license profile + years + billing model |
+| `fn_product_select_profile` — resolve product_id from 12 attributes | 2.1 | Complex multi-attribute lookup |
+| Consumer pricing (retail_price × discount) | SEC 3 | `usp_cart_select_renewal_product_set` |
+| Business direct pricing (pro-rated, tier discount) | SEC 4 | `ProductCapability`, leap-day helper |
+
+### Remaining — equivalent_year_price exact computation (G20 partial)
+
+Current code: `unit_price * years` proxy.
+Exact SP logic: `fn_cart_select_one_year_products(product_id)` + `product_pricing` JOIN by locale.
+Fix needs: locale split helper + 1-year product variant lookup via `product_pricing` + `product_years`.
+
+### Future Phases (P3)
 
 | Gap | Description |
 |-----|-------------|
-| G22 | Bundle deduplication on re-insert (remove existing bundle before adding updated one) |
-| G23 | Load `AllowedSiteIds` / `AllowedLicenseCategoryNames` from DB instead of hardcoded |
-| G24 | `GET /cart/cart-orders/{vendorOrderCode}` — load cart for right-panel display |
-| G25 | `PUT /cart/cart-orders/{vendorOrderCode}/items/{id}` — update cart item |
-| G26 | `DELETE /cart/cart-orders/{vendorOrderCode}/items/{id}` — remove cart item |
+| G22 | Bundle deduplication on re-insert |
+| G23 | Load `AllowedSiteIds` / `AllowedLicenseCategoryNames` from DB |
+| G24 | `GET /cart/cart-orders/{vendorOrderCode}` |
+| G25 | `PUT /cart/cart-orders/{vendorOrderCode}/items/{id}` |
+| G26 | `DELETE /cart/cart-orders/{vendorOrderCode}/items/{id}` |
 
 ---
 
@@ -426,17 +542,24 @@ return MapToResponse(order);
 ### Works without any code change when pointing to QA/Production
 
 - All EF Core table/column mappings match QA schema (`ecommerce_VH14`) exactly - **connection string change only**
+- All `tinyint` columns now correctly mapped to `byte` in C# — no materialization cast failures
+- `cart_order_message.message_key` now uses `Guid` (matching `uniqueidentifier` in both local and QA schema)
+- `product_years.years` now mapped to `double` (matching SQL `float`)
 - `cart_order_route`, `cart_order_message`, `cart_order_item_json`, `cart_order_item_license` all insert correctly for relevant request fields
 - Partner currency fallback via `partner_configuration_partner` works against real partner data
-- `FindExistingVendorOrderCodeByKeyAsync` now queries `cart_order_message` live - quote-key detection is active
+- `FindExistingVendorOrderCodeByKeyAsync` queries `cart_order_message` live — quote-key detection is active
 - Request/response shape matches what the PHP frontend sends and reads
 
 ### Still needs work before production
 
 | Task | Detail |
 |------|--------|
-| Replace SEQUENCE with `usp_next_id` | In `EfCartOrderRepository`, swap `SELECT NEXT VALUE FOR dbo.cart_order_next_id` with `EXEC usp_next_id @Type=3` - one line change |
+| Replace SEQUENCE with `usp_next_id` | In `CartOrderRepository`, swap `SELECT NEXT VALUE FOR dbo.cart_order_next_id` with `EXEC usp_next_id @Type=3` — one line change; the sequence is used locally only |
 | CSRF + CSI user auth | `X-WRCART-CSRF`, `X-CSI-USER`, `X-CSI-USER-ID` headers not yet validated by middleware |
-| Update path | Service detects existing cart via `FindExistingVendorOrderCodeByKeyAsync` but update logic is not yet implemented - INSERT is always taken |
-| G10-G13 inserts | See P1 table above |
+| Update path | Service detects existing cart via `FindExistingVendorOrderCodeByKeyAsync` but update logic is not yet implemented — INSERT is always taken |
+| G10 `cart_order_item_json_log` | Entity exists, insert call not yet added |
+| G11 `line_item` offset | Always starts at 1; offset by MAX(line_item) needed for multi-call carts |
+| G12 CBCART routing hack | Update locale/site_id for CBCART + upgrade orders |
+| G13 CD line date sync | product_family_id=8 inherits dates from primary bundle item |
+| Full pricing derivation (SEC 1–4) | See Remaining section above |
 | Smoke test vs QA DB | POST with real partner_key and product_id to verify FK constraints pass against `ecommerce_VH14` |

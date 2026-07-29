@@ -98,8 +98,11 @@ VALUES ('Mock Product A', 1, 0), ('Mock Product B', 1, 0);
 GO
 
 CREATE TABLE dbo.license_category (
-    license_category_id   INT         NOT NULL PRIMARY KEY IDENTITY(1,1),
-    license_category_name VARCHAR(50) NULL UNIQUE
+    license_category_id          INT          NOT NULL PRIMARY KEY IDENTITY(1,1),
+    license_category_name        VARCHAR(50)  NULL,
+    license_category_description VARCHAR(255) NULL,
+    min_order_quantity           INT          NULL,
+    max_order_quantity           INT          NULL
 );
 
 INSERT INTO dbo.license_category (license_category_name)
@@ -200,12 +203,6 @@ INSERT INTO dbo.partner_account (partner_id, account_id, shared_account, partner
 VALUES (1, 1, 0, 1);
 GO
 
--- Add FK from cart_order_partner to partner_account now that the table exists
-ALTER TABLE dbo.cart_order_partner
-    ADD CONSTRAINT FK_cop_partner_account
-        FOREIGN KEY (partner_account_id) REFERENCES dbo.partner_account(partner_account_id);
-GO
-
 -- =============================================================================
 -- PRODUCT CATALOG TABLES  (referenced by item insert / item select SPs)
 -- =============================================================================
@@ -230,10 +227,10 @@ GO
 
 -- product_line_product  (maps products to product lines)
 CREATE TABLE dbo.product_line_product (
-    product_line_id INT NOT NULL,
-    product_id      INT NOT NULL,
+    product_line_product_id INT NOT NULL PRIMARY KEY IDENTITY(1,1),
+    product_line_id         INT NOT NULL,
+    product_id              INT NOT NULL,
 
-    CONSTRAINT PK_plp PRIMARY KEY (product_id, product_line_id),
     CONSTRAINT FK_plp_product_line FOREIGN KEY (product_line_id) REFERENCES dbo.product_line(product_line_id),
     CONSTRAINT FK_plp_product      FOREIGN KEY (product_id)      REFERENCES dbo.product(product_id)
 );
@@ -244,12 +241,12 @@ GO
 
 -- product_years  (used by usp_cart_insert_cart_order_item & usp_cart_select_cart_order_item)
 CREATE TABLE dbo.product_years (
-    product_id     INT   NOT NULL,
-    years          FLOAT NOT NULL,
-    upgrade_months TINYINT NULL,
-    upgrade_days   INT  NULL,
+    product_years_id INT   NOT NULL PRIMARY KEY IDENTITY(1,1),
+    product_id       INT   NOT NULL,
+    years            FLOAT NOT NULL,
+    upgrade_months   TINYINT NULL,
+    upgrade_days     INT  NULL,
 
-    CONSTRAINT PK_py PRIMARY KEY (product_id, years),
     CONSTRAINT FK_py_product FOREIGN KEY (product_id) REFERENCES dbo.product(product_id)
 );
 
@@ -277,11 +274,11 @@ GO
 
 -- product_license_category  (used by usp_cart_select_cart_order_item LEFT JOIN)
 CREATE TABLE dbo.product_license_category (
-    product_id                  INT    NOT NULL,
-    license_category_id         TINYINT NOT NULL,
-    current_license_category_id TINYINT NULL,
+    product_license_category_id INT NOT NULL PRIMARY KEY IDENTITY(1,1),
+    product_id                  INT NOT NULL,
+    license_category_id         INT NOT NULL,
+    current_license_category_id INT NULL,
 
-    CONSTRAINT PK_plc PRIMARY KEY (license_category_id, product_id),
     CONSTRAINT FK_plc_product          FOREIGN KEY (product_id)         REFERENCES dbo.product(product_id),
     CONSTRAINT FK_plc_license_category FOREIGN KEY (license_category_id) REFERENCES dbo.license_category(license_category_id)
 );
@@ -373,7 +370,7 @@ CREATE TABLE dbo.cart_order (
     cart_order_id           INT          NOT NULL PRIMARY KEY IDENTITY(1000,1),
     cart_customer_id        INT          NOT NULL DEFAULT 0,
     invoice_in_process_id   INT          NOT NULL DEFAULT 0,
-    vendor_order_code       VARCHAR(100) NULL,
+    vendor_order_code       VARCHAR(100) NULL UNIQUE,
     order_type              VARCHAR(30)  NOT NULL,
     site_id                 VARCHAR(65)  NOT NULL,
     site_url                VARCHAR(1025) NOT NULL,
@@ -480,6 +477,12 @@ CREATE TABLE dbo.cart_order_partner (
 );
 GO
 
+-- FK to partner_account (table now exists)
+ALTER TABLE dbo.cart_order_partner
+    ADD CONSTRAINT FK_cop_partner_account
+        FOREIGN KEY (partner_account_id) REFERENCES dbo.partner_account(partner_account_id);
+GO
+
 -- =============================================================================
 -- cart_order_route  (G4)
 -- =============================================================================
@@ -498,7 +501,7 @@ GO
 CREATE TABLE dbo.cart_order_message (
     cart_order_message_id       INT              NOT NULL PRIMARY KEY IDENTITY(1,1),
     cart_order_id               INT              NOT NULL,
-    message_key                 UNIQUEIDENTIFIER NOT NULL,
+    message_key                 UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
     license_id                  INT              NULL,
     cart_discount_id            INT              NULL,
     status_id                   TINYINT          NOT NULL DEFAULT 1,
