@@ -219,7 +219,7 @@ public sealed class CartOrderRepositoryTests : IDisposable
             SiteId = "webroot",
             Locale = "en-US",
             VendorOrderCode = "WR00004",
-            MessageKey = "MYKEY123"
+            MessageKey = "550e8400-e29b-41d4-a716-446655440001"
         };
 
         await repo.InsertCartOrderHeaderAsync(request);
@@ -227,7 +227,7 @@ public sealed class CartOrderRepositoryTests : IDisposable
         var order = await ctx.CartOrder.SingleAsync(o => o.VendorOrderCode == "WR00004");
         var msg = await ctx.CartOrderMessage.SingleOrDefaultAsync(m => m.CartOrderId == order.CartOrderId);
         Assert.NotNull(msg);
-        Assert.Equal("MYKEY123", msg!.MessageKey);
+        Assert.Equal(Guid.Parse("550e8400-e29b-41d4-a716-446655440001"), msg!.MessageKey);
     }
 
     [Fact]
@@ -465,7 +465,7 @@ public sealed class CartOrderRepositoryTests : IDisposable
         ctx.CartOrderMessage.Add(new CartOrderMessage
         {
             CartOrderId = order.CartOrderId,
-            MessageKey = "TESTKEY"
+            MessageKey = Guid.Parse("550e8400-e29b-41d4-a716-446655440002")
         });
         await ctx.SaveChangesAsync();
 
@@ -573,12 +573,12 @@ public sealed class CartOrderRepositoryTests : IDisposable
         ctx.CartOrderMessage.Add(new CartOrderMessage
         {
             CartOrderId = order.CartOrderId,
-            MessageKey = "FIND_ME"
+            MessageKey = Guid.Parse("550e8400-e29b-41d4-a716-446655440003")
         });
         await ctx.SaveChangesAsync();
 
         var repo = NewRepo(ctx);
-        var result = await repo.FindExistingVendorOrderCodeByKeyAsync("FIND_ME");
+        var result = await repo.FindExistingVendorOrderCodeByKeyAsync("550e8400-e29b-41d4-a716-446655440003");
 
         Assert.Equal("WR55555", result);
     }

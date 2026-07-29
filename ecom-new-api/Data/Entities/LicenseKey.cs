@@ -12,6 +12,5 @@ public sealed class LicenseKey
 
     // Column name is "license_key" matching the SP: WHERE license_key = @message_key
     [Column("license_key")]
-    [MaxLength(36)]
-    public string Key { get; set; } = default!;
+    public Guid Key { get; set; }
 }

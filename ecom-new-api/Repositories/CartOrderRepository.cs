@@ -189,7 +189,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
             var prefix = await _db.CartSiteIdOrderCodePrefix
                 .Where(x => x.SiteId == request.SiteId)
                 .Select(x => x.VendorOrderCodePrefix)
-                .SingleOrDefaultAsync(ct) ?? string.Empty;
+                .FirstOrDefaultAsync(ct) ?? string.Empty;
 
             var nextId = await GetNextVendorOrderIdAsync(ct);
             vendorOrderCode = $"{prefix}{nextId}";
@@ -253,18 +253,21 @@ public sealed class CartOrderRepository : ICartOrderRepository
         }
 
         // 2.5) Insert cart_order_message (optional — when message_key is supplied)
-        var messageKey = string.IsNullOrWhiteSpace(request.MessageKey) ? null : request.MessageKey;
-        if (messageKey is not null)
+        Guid? messageKeyGuid = null;
+        if (!string.IsNullOrWhiteSpace(request.MessageKey) && Guid.TryParse(request.MessageKey, out var parsedKey))
+            messageKeyGuid = parsedKey;
+
+        if (messageKeyGuid is not null)
         {
             var licenseId = await _db.LicenseKey
-                .Where(k => k.Key == messageKey)
+                .Where(k => k.Key == messageKeyGuid)
                 .Select(k => (int?)k.LicenseId)
                 .SingleOrDefaultAsync(ct);
 
             _db.CartOrderMessage.Add(new CartOrderMessage
             {
                 CartOrderId = order.CartOrderId,
-                MessageKey = messageKey,
+                MessageKey = messageKeyGuid,
                 MessageCampaignId = request.MessageCampaignId,
                 MessageCampaignPlatform = request.MessageCampaignPlatform,
                 CartDiscountId = request.CartDiscountId,
@@ -689,10 +692,12 @@ public sealed class CartOrderRepository : ICartOrderRepository
     public async Task<string?> FindExistingVendorOrderCodeByKeyAsync(
         string key, CancellationToken ct = default)
     {
+        if (!Guid.TryParse(key, out var keyGuid)) return null;
+
         return await (
             from m in _db.CartOrderMessage
             join o in _db.CartOrder on m.CartOrderId equals o.CartOrderId
-            where m.MessageKey == key
+            where m.MessageKey == keyGuid
             select o.VendorOrderCode
         ).FirstOrDefaultAsync(ct);
     }
@@ -700,10 +705,13 @@ public sealed class CartOrderRepository : ICartOrderRepository
     // ── Read-path stubs (implemented by downstream services in future) ────────────
 
     private async Task<string?> GetOrderMessageKeyAsync(int cartOrderId, CancellationToken ct)
-        => await _db.CartOrderMessage
+    {
+        var guid = await _db.CartOrderMessage
             .Where(m => m.CartOrderId == cartOrderId)
             .Select(m => m.MessageKey)
             .FirstOrDefaultAsync(ct);
+        return guid?.ToString();
+    }
 
     private static string GetCurrencySymbol(string? currencyCode) => currencyCode switch
     {
@@ -741,10 +749,10 @@ public sealed class CartOrderRepository : ICartOrderRepository
     /// </summary>
     private async Task<int> GetNextVendorOrderIdAsync(CancellationToken ct)
     {
-        var maxId = await _db.CartOrder
-            .Select(o => (int?)o.CartOrderId)
-            .MaxAsync(ct);
-        return (maxId ?? 0) + 1;
+        var result = await _db.Database
+            .SqlQueryRaw<int>("SELECT NEXT VALUE FOR dbo.cart_order_next_id")
+            .ToListAsync(ct);
+        return result[0];
     }
 
     /// <summary>

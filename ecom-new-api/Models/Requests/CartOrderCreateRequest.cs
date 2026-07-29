@@ -15,49 +15,62 @@ public sealed class CartOrderCreateRequest
     public string SiteId { get; init; } = default!;
 
     /// <summary>BCP-47 locale tag, e.g. "en-US". Required.</summary>
+    [JsonPropertyName("locale")]
     public string Locale { get; init; } = default!;
 
     // ── Optional order-level fields ────────────────────────────────────────────
 
     /// <summary>ISO 4217 currency code. Falls back to partner config then default (USD) if omitted.</summary>
+    [JsonPropertyName("currencyCode")]
     public string? CurrencyCode { get; init; }
 
     /// <summary>Existing vendor order code. Server generates one if omitted.</summary>
+    [JsonPropertyName("vendorOrderCode")]
     public string? VendorOrderCode { get; init; }
 
     /// <summary>UUID of the partner placing the order.</summary>
+    [JsonPropertyName("partnerKey")]
     public string? PartnerKey { get; init; }
 
     /// <summary>Username on the partner account — injected by middleware from CSI user context.</summary>
+    [JsonPropertyName("accountUserName")]
     public string? AccountUserName { get; init; }
 
     /// <summary>Routing hint for downstream order processing (e.g. "autoprocess").</summary>
+    [JsonPropertyName("routingAction")]
     public string? RoutingAction { get; init; }
 
     /// <summary>Sales order date override. Defaults to today if omitted.</summary>
+    [JsonPropertyName("salesOrderDate")]
     public DateTime? SalesOrderDate { get; init; }
 
     /// <summary>Campaign ID that drove this order.</summary>
+    [JsonPropertyName("messageCampaignId")]
     public int? MessageCampaignId { get; init; }
 
     /// <summary>Platform label for the campaign (e.g. "email", "web").</summary>
+    [JsonPropertyName("messageCampaignPlatform")]
     public string? MessageCampaignPlatform { get; init; }
 
     /// <summary>
     /// Keycode / message key entered by the user.
     /// If this resolves to a quote key the service must pivot to an UPDATE rather than INSERT.
     /// </summary>
+    [JsonPropertyName("messageKey")]
     public string? MessageKey { get; init; }
 
     /// <summary>Pre-applied discount identifier.</summary>
+    [JsonPropertyName("cartDiscountId")]
     public int? CartDiscountId { get; init; }
 
     /// <summary>Referral or landing URL.</summary>
+    [JsonPropertyName("urlLink")]
     public string? UrlLink { get; init; }
 
     // ── Line items ─────────────────────────────────────────────────────────────
 
     /// <summary>Zero or more products being added to the cart in this request.</summary>
+    [JsonPropertyName("items")]
     public List<CartOrderItemRequest> Items { get; init; } = [];
 
     // ── Server-side injected fields (set by middleware, NOT trusted from client) ──
@@ -67,23 +80,27 @@ public sealed class CartOrderCreateRequest
     /// TODO: REPLACE WITH ACTUAL — set this from HttpContext.Connection.RemoteIpAddress in middleware,
     /// never from the request body.
     /// </summary>
+    [JsonPropertyName("userIp")]
     public string UserIp { get; set; } = "0.0.0.0";
 
     /// <summary>
     /// CSI user ID resolved from X-CSI-USER-ID header.
     /// TODO: REPLACE WITH ACTUAL — injected by AuthMiddleware.
     /// </summary>
+    [JsonPropertyName("csiUserId")]
     public int? CsiUserId { get; set; }
 
     /// <summary>
     /// Partner rate code resolved from account context.
     /// TODO: REPLACE WITH ACTUAL — injected by AccountContextMiddleware.
     /// </summary>
+    [JsonPropertyName("pRc")]
     public string? PRc { get; set; }
 
     /// <summary>
     /// Transaction rate code resolved from account context.
     /// TODO: REPLACE WITH ACTUAL — injected by AccountContextMiddleware.
     /// </summary>
+    [JsonPropertyName("trxRc")]
     public string? TrxRc { get; set; }
 }

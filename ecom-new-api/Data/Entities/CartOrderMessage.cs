@@ -14,8 +14,7 @@ public sealed class CartOrderMessage
     public int CartOrderId { get; set; }
 
     [Column("message_key")]
-    [MaxLength(36)]
-    public string? MessageKey { get; set; }
+    public Guid? MessageKey { get; set; }
 
     [Column("message_campaign_id")]
     public int? MessageCampaignId { get; set; }
