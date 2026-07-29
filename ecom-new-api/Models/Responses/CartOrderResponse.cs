@@ -55,7 +55,7 @@ public sealed class CartOrderResponse
     public string? ModifiedBy { get; init; }
 
     /// <summary>cart_order.cart_order_status_id</summary>
-    public int CartOrderStatusId { get; init; }
+    public byte CartOrderStatusId { get; init; }
 
     /// <summary>cart_order.user_ip — always server-set, never client-supplied.</summary>
     public string? UserIp { get; init; }
@@ -63,7 +63,7 @@ public sealed class CartOrderResponse
     // ── From currency (JOIN on cart_order.currency_id) ─────────────────────────
 
     /// <summary>currency.currency_id</summary>
-    public int CurrencyId { get; init; }
+    public byte CurrencyId { get; init; }
 
     /// <summary>currency.currency_code (e.g. "USD")</summary>
     public string CurrencyCode { get; init; } = default!;

@@ -199,6 +199,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
         var order = new CartOrder
         {
             VendorOrderCode = vendorOrderCode,
+            CartCustomerId = 0,  // Default value per database schema
             OrderType = request.SiteId,
             SiteId = request.SiteId,
             SiteUrl = request.SiteId,
@@ -207,7 +208,11 @@ public sealed class CartOrderRepository : ICartOrderRepository
             Locale = request.Locale,
             UserIp = request.UserIp,
             CurrencyId = currencyId.Value,
-            InsertDate = now
+            InsertDate = now,
+            InsertBy = request.CsiUserId.ToString(),
+            ModifiedDate = now,
+            ModifiedBy = request.CsiUserId.ToString(),
+            SubTotalAmount = 0
         };
 
         _db.CartOrder.Add(order);
@@ -419,7 +424,8 @@ public sealed class CartOrderRepository : ICartOrderRepository
     {
         var row = await (
             from co in _db.CartOrder
-            join cu in _db.Currency on co.CurrencyId equals cu.CurrencyId
+            join cu in _db.Currency on co.CurrencyId equals cu.CurrencyId into cuJoin
+            from cu in cuJoin.DefaultIfEmpty()
             join cp in _db.CartOrderPartner on co.CartOrderId equals cp.CartOrderId into cpJoin
             from cp in cpJoin.DefaultIfEmpty()
             join p in _db.Partner on cp.PartnerId equals p.PartnerId into pJoin
@@ -443,8 +449,8 @@ public sealed class CartOrderRepository : ICartOrderRepository
                 co.ModifiedDate,
                 co.ModifiedBy,
                 co.CartOrderStatusId,
-                CurrencyId = (int)cu.CurrencyId,
-                cu.CurrencyCode,
+                CurrencyId = cu != null ? cu.CurrencyId : (byte)0,
+                CurrencyCode = cu != null ? cu.CurrencyCode : null,
                 co.UserIp,
                 PartnerKey = p != null ? p.PartnerKey.ToString() : null,
                 CartJson = j != null ? j.Json : null

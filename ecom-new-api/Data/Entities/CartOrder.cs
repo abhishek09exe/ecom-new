@@ -10,6 +10,12 @@ public sealed class CartOrder
     [Column("cart_order_id")]
     public int CartOrderId { get; set; }
 
+    [Column("cart_customer_id")]
+    public int CartCustomerId { get; set; }
+
+    [Column("invoice_in_process_id")]
+    public int InvoiceInProcessId { get; set; } = 0;
+
     [Column("vendor_order_code")]
     [MaxLength(100)]
     public string VendorOrderCode { get; set; } = default!;
@@ -26,6 +32,10 @@ public sealed class CartOrder
     [MaxLength(65)]
     public string? SiteUrl { get; set; }
 
+    [Column("p_rc")]
+    [MaxLength(50)]
+    public string PRc { get; set; } = "1";
+
     [Column("offer_amount")]
     public decimal? OfferAmount { get; set; }
 
@@ -37,6 +47,14 @@ public sealed class CartOrder
 
     [Column("tax_amount")]
     public decimal? TaxAmount { get; set; }
+
+    [Column("payment_method")]
+    [MaxLength(255)]
+    public string PaymentMethod { get; set; } = "";
+
+    [Column("session_id")]
+    [MaxLength(8)]
+    public string SessionId { get; set; } = "";
 
     [Column("sales_order_date")]
     public DateTime SalesOrderDate { get; set; }
@@ -56,7 +74,7 @@ public sealed class CartOrder
     public byte CurrencyId { get; set; }
 
     [Column("cart_order_status_id")]
-    public int CartOrderStatusId { get; set; }
+    public byte CartOrderStatusId { get; set; }
 
     [Column("insert_date")]
     public DateTime InsertDate { get; set; }

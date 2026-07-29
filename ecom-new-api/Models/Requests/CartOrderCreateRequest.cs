@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace ecom_new_api.Models.Requests;
 
 /// <summary>
@@ -9,6 +11,7 @@ public sealed class CartOrderCreateRequest
     // ── Required fields ────────────────────────────────────────────────────────
 
     /// <summary>Identifies the ordering site (e.g. "gsm", "webroot"). Required.</summary>
+    [JsonPropertyName("siteId")]
     public string SiteId { get; init; } = default!;
 
     /// <summary>BCP-47 locale tag, e.g. "en-US". Required.</summary>
