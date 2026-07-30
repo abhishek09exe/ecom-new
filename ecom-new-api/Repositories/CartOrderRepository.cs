@@ -767,28 +767,33 @@ public sealed class CartOrderRepository : ICartOrderRepository
     // ── Private helpers ───────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Generates the next sequential vendor order ID using the local DB SEQUENCE.
-    /// Equivalent to EXEC usp_next_id @Type=3 in the SP.
-    /// Uses ADO.NET directly — NEXT VALUE FOR cannot run inside an EF subquery.
-    /// To switch to QA: replace the SELECT with EXEC usp_next_id @Type=3 and read output param.
+    /// Generates the next sequential vendor order ID — mirrors the ids-table path of usp_next_id @Type=3.
+    /// <para>
+    /// The SP increments <c>ids.next_id</c> where <c>id_type = 3</c> and returns the new value.
+    /// <c>ExecuteUpdateAsync</c> emits a single <c>UPDATE</c> statement that acquires an X lock on
+    /// the row; concurrent callers serialise on that lock, matching the SP's <c>BEGIN TRANSACTION</c>
+    /// behaviour.
+    /// </para>
+    /// <para>
+    /// Note: the SP also has an <c>Invoices_sequence</c> identity-table path that is activated only
+    /// in production environments where that table exists and is seeded. That path is not ported here;
+    /// the ids-table path covers local and QA environments.
+    /// </para>
     /// </summary>
     private async Task<int> GetNextVendorOrderIdAsync(CancellationToken ct)
     {
-        var conn = _db.Database.GetDbConnection();
-        var wasOpen = conn.State == System.Data.ConnectionState.Open;
-        if (!wasOpen) await conn.OpenAsync(ct);
+        // Atomically increment — the UPDATE X lock prevents concurrent callers from
+        // reading the same next_id value before this transaction commits.
+        await _db.Ids
+            .Where(r => r.IdType == 3)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.NextId, r => r.NextId + 1)
+                .SetProperty(r => r.LastModified, _ => DateTime.UtcNow), ct);
 
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT NEXT VALUE FOR dbo.cart_order_next_id";
-
-        // Enlist in the current EF transaction if one is active —
-        // without this the command runs outside the transaction and SQL Server rejects it.
-        var currentTx = _db.Database.CurrentTransaction?.GetDbTransaction();
-        if (currentTx != null) cmd.Transaction = currentTx;
-
-        var result = (int)await cmd.ExecuteScalarAsync(ct)!;
-        if (!wasOpen) await conn.CloseAsync();
-        return result;
+        return await _db.Ids
+            .Where(r => r.IdType == 3)
+            .Select(r => r.NextId)
+            .SingleAsync(ct);
     }
 
     /// <summary>

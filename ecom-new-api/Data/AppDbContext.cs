@@ -27,6 +27,9 @@ public sealed class AppDbContext : DbContext
     public DbSet<Currency> Currency => Set<Currency>();
     public DbSet<CartSiteIdOrderCodePrefix> CartSiteIdOrderCodePrefix => Set<CartSiteIdOrderCodePrefix>();
 
+    // ── Sequence / ID tables ────────────────────────────────────────────────────
+    public DbSet<IdsRow> Ids => Set<IdsRow>();
+
     // ── License tables ──────────────────────────────────────────────────────────
     public DbSet<LicenseKey> LicenseKey => Set<LicenseKey>();
     public DbSet<LicenseCategory> LicenseCategory => Set<LicenseCategory>();
@@ -133,6 +136,9 @@ public sealed class AppDbContext : DbContext
             .HasForeignKey(p => p.LicenseKeycodeTypeId);
 
         // product_line_product
+        modelBuilder.Entity<ProductLineProduct>()
+            .HasKey(plp => new { plp.ProductId, plp.ProductLineId });
+
         modelBuilder.Entity<ProductLineProduct>()
             .HasOne(plp => plp.Product)
             .WithMany(p => p.ProductLineProducts)
