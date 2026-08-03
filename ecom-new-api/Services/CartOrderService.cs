@@ -85,6 +85,19 @@ public sealed class CartOrderService : ICartOrderService
             : ServiceResult<LicenseOptionsResponse>.Ok(result);
     }
 
+    public async Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsByMessageKeyAsync(
+        string messageKey, CancellationToken ct = default)
+    {
+        var keycode = await _repo.ResolveKeycodeFromMessageKeyAsync(messageKey, ct);
+        if (keycode is null)
+            return ServiceResult<LicenseOptionsResponse>.NotFound($"No license found for message_key '{messageKey}'");
+
+        var result = await _repo.SelectLicenseOptionsAsync(keycode, ct);
+        return result is null
+            ? ServiceResult<LicenseOptionsResponse>.NotFound($"No license found for message_key '{messageKey}'")
+            : ServiceResult<LicenseOptionsResponse>.Ok(result);
+    }
+
     public async Task<ServiceResult<ConfigureResponse>> GetConfigureAsync(
         string keycode, CancellationToken ct = default)
     {

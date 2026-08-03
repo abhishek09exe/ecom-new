@@ -14,7 +14,7 @@ public sealed class ProductLicenseCategory
     public int ProductId { get; set; }
 
     [Column("license_category_id")]
-    public int LicenseCategoryId { get; set; }
+    public byte LicenseCategoryId { get; set; }
 
     // Navigation
     public Product? Product { get; set; }

@@ -21,6 +21,9 @@ public interface ICartOrderService
     Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsAsync(
         string keycode, CancellationToken ct = default);
 
+    Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsByMessageKeyAsync(
+        string messageKey, CancellationToken ct = default);
+
     Task<ServiceResult<ConfigureResponse>> GetConfigureAsync(
         string keycode, CancellationToken ct = default);
 
