@@ -130,44 +130,40 @@ public sealed class CartOrdersControllerTests
 
     // ── GET /license-options ──────────────────────────────────────────────────
 
+    private const string ValidGuid = "E151E1C7-018B-46EF-93A3-2CB7E01805C8";
+
     [Fact]
-    public async Task GetLicenseOptions_ServiceReturnsOk_Returns200WithEnvelope()
+    public async Task GetLicenseOptions_ValidMessageKey_Returns200WithEnvelope()
     {
-        var licenseResponse = new LicenseOptionsResponse { Keycode = "KEY123" };
-        _serviceMock.Setup(s => s.GetLicenseOptionsAsync("KEY123", It.IsAny<CancellationToken>()))
+        var licenseResponse = new LicenseOptionsResponse { Keycode = "RESOLVED" };
+        _serviceMock.Setup(s => s.GetLicenseOptionsByMessageKeyAsync(ValidGuid, It.IsAny<CancellationToken>()))
                     .ReturnsAsync(ServiceResult<LicenseOptionsResponse>.Ok(licenseResponse));
 
-        var ctrl   = CreateController();
-        var result = await ctrl.GetLicenseOptions("KEY123", null, null, CancellationToken.None);
+        var result = await CreateController().GetLicenseOptions(ValidGuid, null, CancellationToken.None);
 
         var okResult = Assert.IsType<OkObjectResult>(result);
         var envelope = Assert.IsType<ApiResponse<LicenseOptionsResponse>>(okResult.Value);
         Assert.Equal(0, envelope.ResponseCode);
-        Assert.Equal("KEY123", envelope.Data!.Keycode);
+        Assert.Equal("RESOLVED", envelope.Data!.Keycode);
     }
 
     [Fact]
-    public async Task GetLicenseOptions_ServiceReturnsValidationError_Returns400()
+    public async Task GetLicenseOptions_MissingMessageKey_Returns400()
     {
-        // empty keycode and no message_key → controller returns 400 without calling service
-        var ctrl   = CreateController();
-        var result = await ctrl.GetLicenseOptions("", null, null, CancellationToken.None);
+        var result = await CreateController().GetLicenseOptions(null, null, CancellationToken.None);
 
-        var badRequest = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Equal(StatusCodes.Status400BadRequest, badRequest.StatusCode);
+        Assert.IsType<BadRequestObjectResult>(result);
     }
 
     [Fact]
-    public async Task GetLicenseOptions_ServiceReturnsNotFound_Returns404()
+    public async Task GetLicenseOptions_MessageKeyNotFound_Returns404()
     {
-        _serviceMock.Setup(s => s.GetLicenseOptionsAsync("MISSING", It.IsAny<CancellationToken>()))
-                    .ReturnsAsync(ServiceResult<LicenseOptionsResponse>.NotFound("No license found for keycode 'MISSING'"));
+        _serviceMock.Setup(s => s.GetLicenseOptionsByMessageKeyAsync(ValidGuid, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(ServiceResult<LicenseOptionsResponse>.NotFound("No license found"));
 
-        var ctrl   = CreateController();
-        var result = await ctrl.GetLicenseOptions("MISSING", null, null, CancellationToken.None);
+        var result = await CreateController().GetLicenseOptions(ValidGuid, null, CancellationToken.None);
 
-        var notFound = Assert.IsType<NotFoundObjectResult>(result);
-        Assert.Equal(StatusCodes.Status404NotFound, notFound.StatusCode);
+        Assert.IsType<NotFoundObjectResult>(result);
     }
 
     // ── GET /configure ────────────────────────────────────────────────────────
@@ -232,36 +228,6 @@ public sealed class CartOrdersControllerTests
 
     // ── GET /license-options — new param combinations ─────────────────────────
 
-    private const string ValidGuid = "E151E1C7-018B-46EF-93A3-2CB7E01805C8";
-
-    [Fact]
-    public async Task GetLicenseOptions_KeycodeProvided_UsesKeycodeFlow()
-    {
-        var response = new LicenseOptionsResponse { Keycode = "MYCODE" };
-        _serviceMock.Setup(s => s.GetLicenseOptionsAsync("MYCODE", It.IsAny<CancellationToken>()))
-                    .ReturnsAsync(ServiceResult<LicenseOptionsResponse>.Ok(response));
-
-        var result = await CreateController().GetLicenseOptions("MYCODE", null, null, CancellationToken.None);
-
-        var ok = Assert.IsType<OkObjectResult>(result);
-        var envelope = Assert.IsType<ApiResponse<LicenseOptionsResponse>>(ok.Value);
-        Assert.Equal("MYCODE", envelope.Data!.Keycode);
-        _serviceMock.Verify(s => s.GetLicenseOptionsByMessageKeyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-    }
-
-    [Fact]
-    public async Task GetLicenseOptions_BothProvided_KeycodeTakesPrecedence()
-    {
-        var response = new LicenseOptionsResponse { Keycode = "MYCODE" };
-        _serviceMock.Setup(s => s.GetLicenseOptionsAsync("MYCODE", It.IsAny<CancellationToken>()))
-                    .ReturnsAsync(ServiceResult<LicenseOptionsResponse>.Ok(response));
-
-        var result = await CreateController().GetLicenseOptions("MYCODE", ValidGuid, null, CancellationToken.None);
-
-        Assert.IsType<OkObjectResult>(result);
-        _serviceMock.Verify(s => s.GetLicenseOptionsByMessageKeyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-    }
-
     [Fact]
     public async Task GetLicenseOptions_ValidMessageKey_UsesMessageKeyFlow()
     {
@@ -269,7 +235,7 @@ public sealed class CartOrdersControllerTests
         _serviceMock.Setup(s => s.GetLicenseOptionsByMessageKeyAsync(ValidGuid, It.IsAny<CancellationToken>()))
                     .ReturnsAsync(ServiceResult<LicenseOptionsResponse>.Ok(response));
 
-        var result = await CreateController().GetLicenseOptions(null, ValidGuid, "en_US", CancellationToken.None);
+        var result = await CreateController().GetLicenseOptions(ValidGuid, "en_US", CancellationToken.None);
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var envelope = Assert.IsType<ApiResponse<LicenseOptionsResponse>>(ok.Value);
@@ -279,16 +245,16 @@ public sealed class CartOrdersControllerTests
     [Fact]
     public async Task GetLicenseOptions_InvalidGuidMessageKey_Returns400()
     {
-        var result = await CreateController().GetLicenseOptions(null, "not-a-guid", null, CancellationToken.None);
+        var result = await CreateController().GetLicenseOptions("not-a-guid", null, CancellationToken.None);
 
         Assert.IsType<BadRequestObjectResult>(result);
         _serviceMock.Verify(s => s.GetLicenseOptionsByMessageKeyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task GetLicenseOptions_NeitherProvided_Returns400()
+    public async Task GetLicenseOptions_NullMessageKey_Returns400()
     {
-        var result = await CreateController().GetLicenseOptions(null, null, null, CancellationToken.None);
+        var result = await CreateController().GetLicenseOptions(null, null, CancellationToken.None);
 
         Assert.IsType<BadRequestObjectResult>(result);
     }
@@ -299,7 +265,7 @@ public sealed class CartOrdersControllerTests
         _serviceMock.Setup(s => s.GetLicenseOptionsByMessageKeyAsync(ValidGuid, It.IsAny<CancellationToken>()))
                     .ReturnsAsync(ServiceResult<LicenseOptionsResponse>.NotFound("No license found"));
 
-        var result = await CreateController().GetLicenseOptions(null, ValidGuid, null, CancellationToken.None);
+        var result = await CreateController().GetLicenseOptions(ValidGuid, null, CancellationToken.None);
 
         Assert.IsType<NotFoundObjectResult>(result);
     }
