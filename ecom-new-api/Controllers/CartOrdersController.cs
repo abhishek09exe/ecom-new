@@ -76,7 +76,7 @@ public sealed class CartOrdersController : ControllerBase
     // ── GET /license-options ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Fetches license + available products for a keycode or message_key GUID.
+    /// Fetches license + available products for a license identified by message_key GUID.
     /// First call made by the interstitial cart page on load.
     /// </summary>
     [HttpGet("/license-options")]
@@ -84,28 +84,18 @@ public sealed class CartOrdersController : ControllerBase
     [ProducesResponseType(typeof(ApiResponse<LicenseOptionsResponse>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<LicenseOptionsResponse>), StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetLicenseOptions(
-        [FromQuery] string? keycode,
         [FromQuery] string? message_key,
         [FromQuery] string? locale,   // accepted to match legacy contract; not yet used
         CancellationToken ct)
     {
-        // keycode takes precedence when both are supplied
-        if (!string.IsNullOrWhiteSpace(keycode))
-        {
-            var result = await _service.GetLicenseOptionsAsync(keycode, ct);
-            return MapResult(result);
-        }
+        if (string.IsNullOrWhiteSpace(message_key))
+            return MapResult(ServiceResult<LicenseOptionsResponse>.Invalid(["message_key is required"]));
 
-        if (!string.IsNullOrWhiteSpace(message_key))
-        {
-            if (!Guid.TryParse(message_key, out _))
-                return MapResult(ServiceResult<LicenseOptionsResponse>.Invalid(["message_key must be a valid GUID"]));
+        if (!Guid.TryParse(message_key, out _))
+            return MapResult(ServiceResult<LicenseOptionsResponse>.Invalid(["message_key must be a valid GUID"]));
 
-            var result = await _service.GetLicenseOptionsByMessageKeyAsync(message_key, ct);
-            return MapResult(result);
-        }
-
-        return MapResult(ServiceResult<LicenseOptionsResponse>.Invalid(["keycode or message_key is required"]));
+        var result = await _service.GetLicenseOptionsByMessageKeyAsync(message_key, ct);
+        return MapResult(result);
     }
 
     // ── GET /configure ──────────────────────────────────────────────────────────

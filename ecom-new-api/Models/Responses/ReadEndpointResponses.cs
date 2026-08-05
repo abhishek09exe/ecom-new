@@ -1,5 +1,28 @@
 namespace ecom_new_api.Models.Responses;
 
+public sealed class LicenseInfoResponse
+{
+    public string? Keycode { get; init; }
+    public string? LicenseKey { get; init; }
+    public DateTime? EndDate { get; init; }
+    public bool IsExpired { get; init; }
+    public int? LicenseAttributeLicenseValue { get; init; }
+    public int? LicenseSeats { get; init; }
+    public int? LicenseKeycodeTypeId { get; init; }
+    public string? LicenseCategoryName { get; init; }
+    public string? CapabilityTypeDescription { get; init; }
+}
+
+public sealed class LicenseProfileEntryResponse
+{
+    public string? LicenseCategoryName { get; init; }
+    public string? LicenseCategoryDescription { get; init; }
+    public string? CategoryTypeName { get; init; }
+    public DateTime? StartDate { get; init; }
+    public DateTime? ExpirationDate { get; init; }
+    public int? LicenseSeats { get; init; }
+}
+
 public sealed class LicenseOptionsResponse
 {
     public string Keycode { get; init; } = default!;
@@ -11,6 +34,8 @@ public sealed class LicenseOptionsResponse
     public int? LicenseSeats { get; init; }
     public DateTime? ExpirationDate { get; init; }
     public List<ProductOptionResponse> ProductOptions { get; init; } = [];
+    public LicenseInfoResponse? License { get; init; }
+    public Dictionary<string, LicenseProfileEntryResponse> LicenseProfile { get; init; } = [];
 }
 
 /// <summary>

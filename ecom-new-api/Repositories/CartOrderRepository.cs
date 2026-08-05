@@ -776,14 +776,23 @@ public sealed class CartOrderRepository : ICartOrderRepository
 
         if (license is null) return null;
 
-        // license_category_license and license_seat may be empty — fetched separately to avoid INNER JOIN masking the license row
-        var categoryRow = await (
+        // fetch ALL category rows for license_profile; also used for product options (first/most-recent entry)
+        var categoryRows = await (
             from lcl in _db.LicenseCategoryLicense
             join lc in _db.LicenseCategory on lcl.LicenseCategoryId equals lc.LicenseCategoryId
             where lcl.LicenseId == license.LicenseId
             orderby lcl.LicenseCategoryLicenseId descending
-            select new { lc.LicenseCategoryId, lc.LicenseCategoryName, lc.LicenseCategoryDescription }
-        ).FirstOrDefaultAsync(ct);
+            select new
+            {
+                lc.LicenseCategoryId,
+                lc.LicenseCategoryName,
+                lc.LicenseCategoryDescription,
+                lcl.StartDate,
+                EndDate = lcl.EndDate
+            }
+        ).ToListAsync(ct);
+
+        var primaryCategory = categoryRows.FirstOrDefault();
 
         var seats = await _db.LicenseSeat
             .Where(ls => ls.LicenseId == license.LicenseId)
@@ -793,13 +802,13 @@ public sealed class CartOrderRepository : ICartOrderRepository
 
         // ── Product options ──────────────────────────────────────────────────
         List<ProductOptionResponse> productOptions = [];
-        if (categoryRow is not null)
+        if (primaryCategory is not null)
         {
             var products = await (
                 from plc in _db.ProductLicenseCategory
                 join p in _db.Product on plc.ProductId equals p.ProductId
                 join pt in _db.ProductType on p.ProductTypeId equals pt.ProductTypeId
-                where plc.LicenseCategoryId == categoryRow.LicenseCategoryId
+                where plc.LicenseCategoryId == primaryCategory.LicenseCategoryId
                    && (p.ProductTypeId == 1 || p.ProductTypeId == 2)
                 select new { p.ProductId, ProductName = p.ProductDescription, TypeDescription = pt.ProductTypeDescription }
             ).ToListAsync(ct);
@@ -827,7 +836,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
                 {
                     ProductId = p.ProductId,
                     ProductName = p.ProductName ?? string.Empty,
-                    LicenseCategoryName = categoryRow.LicenseCategoryName,
+                    LicenseCategoryName = primaryCategory.LicenseCategoryName,
                     ProductTypeDescription = p.TypeDescription,
                     Price = allPricing.FirstOrDefault(pp => pp.ProductId == p.ProductId)?.RetailPrice,
                     Years = allYears.Where(py => py.ProductId == p.ProductId).Select(py => py.Years).ToList(),
@@ -836,17 +845,42 @@ public sealed class CartOrderRepository : ICartOrderRepository
             }
         }
 
+        // ── License profile (one entry per license_category_license row) ─────
+        // CategoryTypeName requires license_capability + capability_type entities — not yet mapped, left null
+        var licenseProfile = categoryRows.ToDictionary(
+            row => row.LicenseCategoryName,
+            row => new LicenseProfileEntryResponse
+            {
+                LicenseCategoryName = row.LicenseCategoryName,
+                LicenseCategoryDescription = row.LicenseCategoryDescription,
+                StartDate = row.StartDate,
+                ExpirationDate = row.EndDate,
+                LicenseSeats = seats,
+                CategoryTypeName = null,
+            });
+
+        var licenseInfo = new LicenseInfoResponse
+        {
+            Keycode = license.Keycode,
+            LicenseKey = license.LicenseKeyGuid?.ToString("D"),
+            LicenseCategoryName = primaryCategory?.LicenseCategoryName,
+            LicenseSeats = seats,
+            // EndDate, IsExpired, LicenseKeycodeTypeId, LicenseAttributeLicenseValue, CapabilityTypeDescription — not yet mapped
+        };
+
         return new LicenseOptionsResponse
         {
             Keycode = license.Keycode,
             LicenseKey = license.LicenseKeyGuid?.ToString("D"),
             LicenseStatus = license.StatusDescription,
             ProductLine = license.ProductLineDescription,
-            LicenseCategory = categoryRow?.LicenseCategoryName,
-            LicenseCategoryDescription = categoryRow?.LicenseCategoryDescription,
+            LicenseCategory = primaryCategory?.LicenseCategoryName,
+            LicenseCategoryDescription = primaryCategory?.LicenseCategoryDescription,
             LicenseSeats = seats,
             ExpirationDate = license.LicenseExpirationDate,
             ProductOptions = productOptions,
+            License = licenseInfo,
+            LicenseProfile = licenseProfile,
         };
     }
     public Task<ConfigureResponse?> SelectConfigureAsync(
