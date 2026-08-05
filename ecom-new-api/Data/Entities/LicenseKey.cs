@@ -10,8 +10,7 @@ public sealed class LicenseKey
     [Column("license_id")]
     public int LicenseId { get; set; }
 
-    // Column name is "license_key" matching the SP: WHERE license_key = @message_key
+    // uniqueidentifier in DB — must be Guid to avoid SqlDataReader.GetString() cast failure on reads
     [Column("license_key")]
-    [MaxLength(36)]
-    public string Key { get; set; } = default!;
+    public Guid Key { get; set; }
 }

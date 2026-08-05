@@ -35,6 +35,10 @@ public sealed class AppDbContext : DbContext
     public DbSet<LicenseCategory> LicenseCategory => Set<LicenseCategory>();
     public DbSet<LicenseKeycodeType> LicenseKeycodeType => Set<LicenseKeycodeType>();
     public DbSet<LicenseAttributeLicenseValue> LicenseAttributeLicenseValue => Set<LicenseAttributeLicenseValue>();
+    public DbSet<License> License => Set<License>();
+    public DbSet<LicenseStatus> LicenseStatus => Set<LicenseStatus>();
+    public DbSet<LicenseCategoryLicense> LicenseCategoryLicense => Set<LicenseCategoryLicense>();
+    public DbSet<LicenseSeat> LicenseSeat => Set<LicenseSeat>();
 
     // ── Product tables ──────────────────────────────────────────────────────────
     public DbSet<Product> Product => Set<Product>();

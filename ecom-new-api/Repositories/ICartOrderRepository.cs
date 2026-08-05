@@ -81,6 +81,12 @@ public interface ICartOrderRepository
     // ── Read path (GET endpoints) ───────────────────────────────────────────────
 
     /// <summary>
+    /// Resolves a license_key GUID to the Webroot keycode via license_key → license tables.
+    /// Returns null when the GUID does not exist in license_key.
+    /// </summary>
+    Task<string?> ResolveKeycodeFromMessageKeyAsync(string messageKey, CancellationToken ct = default);
+
+    /// <summary>
     /// Fetches license + available products for a keycode.
     ///
     /// Maps to:

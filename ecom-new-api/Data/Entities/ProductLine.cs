@@ -10,7 +10,11 @@ public sealed class ProductLine
     [Column("product_line_id")]
     public int ProductLineId { get; set; }
 
+    [Column("product_line_description")]
+    [MaxLength(40)]
+    public string? ProductLineDescription { get; set; }
+
     [Column("product_line_cart_type")]
-    [MaxLength(50)]
+    [MaxLength(20)]
     public string? ProductLineCartType { get; set; }
 }

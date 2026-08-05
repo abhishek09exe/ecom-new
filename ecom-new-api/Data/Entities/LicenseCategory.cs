@@ -8,7 +8,7 @@ public sealed class LicenseCategory
 {
     [Key]
     [Column("license_category_id")]
-    public int LicenseCategoryId { get; set; }
+    public byte LicenseCategoryId { get; set; }
 
     [Column("license_category_name")]
     [MaxLength(50)]
