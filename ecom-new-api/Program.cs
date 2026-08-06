@@ -24,9 +24,13 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // ── Repositories ────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
+builder.Services.AddScoped<PricingRepository>();
 
 // ── Services ────────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderService, CartOrderService>();
+builder.Services.AddScoped<CurrencyService>();
+builder.Services.AddScoped<MessageKeyService>();
+builder.Services.AddScoped<IPricingService, PricingService>();
 
 // ── Middleware pipeline (not yet implemented) ────────────────────────────────────
 // TODO: REPLACE WITH ACTUAL — register these middleware classes once implemented:
@@ -44,6 +48,7 @@ if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "Ecom Cart API v1"));
+    app.UseDeveloperExceptionPage();
 }
 
 app.UseHttpsRedirection();

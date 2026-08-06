@@ -25,6 +25,7 @@ public sealed class AppDbContext : DbContext
 
     // ── Currency / site tables ──────────────────────────────────────────────────
     public DbSet<Currency> Currency => Set<Currency>();
+    public DbSet<CurrencyLanguageLocation> CurrencyLanguageLocations => Set<CurrencyLanguageLocation>();
     public DbSet<CartSiteIdOrderCodePrefix> CartSiteIdOrderCodePrefix => Set<CartSiteIdOrderCodePrefix>();
 
     // ── Sequence / ID tables ────────────────────────────────────────────────────
@@ -181,5 +182,11 @@ public sealed class AppDbContext : DbContext
             .HasOne(pp => pp.Product)
             .WithMany()
             .HasForeignKey(pp => pp.ProductId);
+
+        // currency_language_location → currency (many..1)
+        modelBuilder.Entity<CurrencyLanguageLocation>()
+            .HasOne(cll => cll.Currency)
+            .WithMany()
+            .HasForeignKey(cll => cll.CurrencyId);
     }
 }
