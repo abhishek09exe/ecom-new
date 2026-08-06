@@ -6,5 +6,6 @@ public interface ILicenseOptionsService
 {
     Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsByMessageKeyAsync(
         string messageKey,
+    string? locale = null,
         CancellationToken ct = default);
 }

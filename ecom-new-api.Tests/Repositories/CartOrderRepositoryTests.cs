@@ -1,6 +1,6 @@
 using ecom_new_api.Data;
 using ecom_new_api.Data.Entities;
-using ecom_new_api.Infrastructure;
+using ecom_new_api.Helpers;
 using ecom_new_api.Models.Requests;
 using ecom_new_api.Repositories.Cart;
 using Microsoft.Data.Sqlite;
@@ -1284,6 +1284,37 @@ public sealed class CartOrderRepositoryTests : IDisposable
         Assert.Empty(result!.UpgradeCategories);
     }
 
+    [Fact]
+    public async Task SelectLicenseOptionsAsync_ProductOptions_IncludePrimaryAndUpgradeCategoryProducts()
+    {
+        await using var ctx = NewContext();
+        var repo = NewRepo(ctx);
+
+        const int licenseId = 194222818;
+        const int primaryProductId = 1515110107;
+        const int upgradeProductId = 1515110108;
+
+        await SeedLicenseOptionsCoreAsync(ctx, licenseId, "SSGBSONYAADUURKJYBMM", 1, "SS");
+        await SeedPrimaryItemHierarchyAsync(ctx);
+        await SeedUpgradeProductOptionScenarioAsync(ctx, primaryProductId, upgradeProductId);
+
+        var result = await repo.SelectLicenseOptionsAsync("SSGBSONYAADUURKJYBMM", "en-US");
+
+        Assert.NotNull(result);
+        Assert.True(result!.UpgradeCategories.ContainsKey("QA_AUTOGEN"));
+
+        var productOptions = result.ProductOptions.OrderBy(p => p.ProductId).ToList();
+        Assert.Equal(2, productOptions.Count);
+
+        var primaryProduct = Assert.Single(productOptions, p => p.ProductId == primaryProductId);
+        Assert.Equal("SS", primaryProduct.LicenseCategoryName);
+
+        var upgradeProduct = Assert.Single(productOptions, p => p.ProductId == upgradeProductId);
+        Assert.Equal("QA_AUTOGEN", upgradeProduct.LicenseCategoryName);
+        Assert.Equal([1d, 2d, 3d], upgradeProduct.Years);
+        Assert.Equal([1, 3, 5], upgradeProduct.Seats);
+    }
+
     private static async Task SeedLicenseOptionsCoreAsync(
         AppDbContext ctx,
         int licenseId,
@@ -1492,6 +1523,154 @@ public sealed class CartOrderRepositoryTests : IDisposable
             LocationCode = "GBR",
             ItemHierarchyId = 1,
         });
+
+        await ctx.SaveChangesAsync();
+    }
+
+    private static async Task SeedUpgradeProductOptionScenarioAsync(
+        AppDbContext ctx,
+        int primaryProductId,
+        int upgradeProductId)
+    {
+        if (!await ctx.LicenseCategory.AnyAsync(c => c.LicenseCategoryId == 253))
+        {
+            ctx.LicenseCategory.Add(new LicenseCategory
+            {
+                LicenseCategoryId = 253,
+                LicenseCategoryName = "QA_AUTOGEN",
+                LicenseCategoryDescription = "QA_AUTOGEN"
+            });
+        }
+
+        if (!await ctx.ProductType.AnyAsync(pt => pt.ProductTypeId == 1))
+        {
+            ctx.ProductType.Add(new ProductType
+            {
+                ProductTypeId = 1,
+                ProductTypeDescription = "Renewal"
+            });
+        }
+
+        if (!await ctx.ProductFamily.AnyAsync(pf => pf.ProductFamilyId == 1))
+        {
+            ctx.ProductFamily.Add(new ProductFamily
+            {
+                ProductFamilyId = 1,
+                ProductFamilyDescription = "OpenText Secure Anywhere"
+            });
+        }
+
+        ctx.Product.AddRange(
+            new Product
+            {
+                ProductId = primaryProductId,
+                ProductDescription = "SS SAME CATEGORY PRODUCT",
+                ProductTypeId = 1,
+                ProductFamilyId = 1,
+                LicenseKeycodeTypeId = 3
+            },
+            new Product
+            {
+                ProductId = upgradeProductId,
+                ProductDescription = "QA AUTOGEN PRODUCT 1515110108",
+                ProductTypeId = 1,
+                ProductFamilyId = 1,
+                LicenseKeycodeTypeId = 3
+            });
+
+        ctx.ProductLicenseCategory.AddRange(
+            new ProductLicenseCategory
+            {
+                ProductLicenseCategoryId = 9101,
+                ProductId = primaryProductId,
+                LicenseCategoryId = 1
+            },
+            new ProductLicenseCategory
+            {
+                ProductLicenseCategoryId = 9102,
+                ProductId = upgradeProductId,
+                LicenseCategoryId = 253
+            });
+
+        ctx.ProductLicenseCategoryUpgrade.Add(new ProductLicenseCategoryUpgrade
+        {
+            ProductLicenseCategoryUpgradeId = 9103,
+            LicenseCategoryId = 1,
+            UpgradeLicenseCategoryId = 253,
+            LanguageCode = "EN",
+            LocationCode = "USA",
+            ItemHierarchyId = 1,
+        });
+
+        ctx.ProductLicenseCategoryYears.AddRange(
+            new ProductLicenseCategoryYears
+            {
+                ProductLicenseCategoryYearsId = 9104,
+                LicenseCategoryId = 1,
+                Years = 1,
+                YearsDescription = "1 Year",
+            },
+            new ProductLicenseCategoryYears
+            {
+                ProductLicenseCategoryYearsId = 9105,
+                LicenseCategoryId = 253,
+                Years = 1,
+                YearsDescription = "1 Year",
+            },
+            new ProductLicenseCategoryYears
+            {
+                ProductLicenseCategoryYearsId = 9106,
+                LicenseCategoryId = 253,
+                Years = 2,
+                YearsDescription = "2 Year",
+            },
+            new ProductLicenseCategoryYears
+            {
+                ProductLicenseCategoryYearsId = 9107,
+                LicenseCategoryId = 253,
+                Years = 3,
+                YearsDescription = "3 Year",
+            });
+
+        ctx.ProductLicenseCategorySeat.AddRange(
+            new ProductLicenseCategorySeat
+            {
+                ProductLicenseCategorySeatId = 9108,
+                LicenseCategoryId = 1,
+                Seats = 1,
+            },
+            new ProductLicenseCategorySeat
+            {
+                ProductLicenseCategorySeatId = 9109,
+                LicenseCategoryId = 253,
+                Seats = 1,
+            },
+            new ProductLicenseCategorySeat
+            {
+                ProductLicenseCategorySeatId = 9110,
+                LicenseCategoryId = 253,
+                Seats = 3,
+            },
+            new ProductLicenseCategorySeat
+            {
+                ProductLicenseCategorySeatId = 9111,
+                LicenseCategoryId = 253,
+                Seats = 5,
+            });
+
+        ctx.ProductPricing.AddRange(
+            new ProductPricing
+            {
+                ProductPricingId = 9112,
+                ProductId = primaryProductId,
+                RetailPrice = 19.99m
+            },
+            new ProductPricing
+            {
+                ProductPricingId = 9113,
+                ProductId = upgradeProductId,
+                RetailPrice = 49.99m
+            });
 
         await ctx.SaveChangesAsync();
     }

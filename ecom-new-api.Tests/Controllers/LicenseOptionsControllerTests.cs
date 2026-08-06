@@ -21,7 +21,7 @@ public sealed class LicenseOptionsControllerTests
     public async Task GetLicenseOptions_ValidMessageKey_Returns200WithEnvelope()
     {
         var payload = new LicenseOptionsResponse { Keycode = "RESOLVED" };
-        _serviceMock.Setup(s => s.GetLicenseOptionsByMessageKeyAsync(ValidGuid, It.IsAny<CancellationToken>()))
+        _serviceMock.Setup(s => s.GetLicenseOptionsByMessageKeyAsync(ValidGuid, null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(ServiceResult<LicenseOptionsResponse>.Ok(payload));
 
         var result = await CreateController().GetLicenseOptions(ValidGuid, null, CancellationToken.None);
@@ -46,13 +46,13 @@ public sealed class LicenseOptionsControllerTests
         var result = await CreateController().GetLicenseOptions("not-a-guid", null, CancellationToken.None);
 
         Assert.IsType<BadRequestObjectResult>(result);
-        _serviceMock.Verify(s => s.GetLicenseOptionsByMessageKeyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _serviceMock.Verify(s => s.GetLicenseOptionsByMessageKeyAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
     public async Task GetLicenseOptions_NotFound_Returns404()
     {
-        _serviceMock.Setup(s => s.GetLicenseOptionsByMessageKeyAsync(ValidGuid, It.IsAny<CancellationToken>()))
+        _serviceMock.Setup(s => s.GetLicenseOptionsByMessageKeyAsync(ValidGuid, "en_US", It.IsAny<CancellationToken>()))
             .ReturnsAsync(ServiceResult<LicenseOptionsResponse>.NotFound("No license found"));
 
         var result = await CreateController().GetLicenseOptions(ValidGuid, "en_US", CancellationToken.None);

@@ -730,6 +730,19 @@ public sealed class CartOrderRepository : ICartOrderRepository
         ).FirstOrDefaultAsync(ct);
     }
 
+    public async Task<string?> ResolveKeycodeFromMessageKeyAsync(
+        string messageKey, CancellationToken ct = default)
+    {
+        if (!Guid.TryParse(messageKey, out var guid)) return null;
+
+        return await (
+            from lk in _db.LicenseKey
+            join l in _db.License on lk.LicenseId equals l.LicenseId
+            where lk.Key == guid
+            select l.Keycode
+        ).FirstOrDefaultAsync(ct);
+    }
+
     // ── Read-path stubs (implemented by downstream services in future) ────────────
 
     private async Task<Guid?> GetOrderMessageKeyAsync(int cartOrderId, CancellationToken ct)
@@ -983,8 +996,8 @@ public sealed class CartOrderRepository : ICartOrderRepository
 
         var (languageCode, locationCode) = ParseLocaleToLanguageAndLocation(locale);
 
-        var upgradeCategories = primaryCategory is null
-            ? new Dictionary<string, UpgradeCategoryResponse>()
+        var upgradeCategoryRows = primaryCategory is null
+            ? []
             : await (
                 from plcu in _db.ProductLicenseCategoryUpgrade
                 join baseLc in _db.LicenseCategory on plcu.LicenseCategoryId equals baseLc.LicenseCategoryId
@@ -995,18 +1008,36 @@ public sealed class CartOrderRepository : ICartOrderRepository
                    && plcu.LocationCode == locationCode
                    && plcu.ItemHierarchyId == 1
                 orderby upgradeLc.LicenseCategoryName
-                select new UpgradeCategoryResponse
+                select new
                 {
+                    UpgradeLicenseCategoryId = (int)upgradeLc.LicenseCategoryId,
                     LicenseCategoryName = baseLc.LicenseCategoryName,
                     UpgradeLicenseCategoryName = upgradeLc.LicenseCategoryName,
                     ItemHierarchyId = ih.ItemHierarchyId,
                     ItemHierarchyName = ih.ItemHierarchyName,
                 }
             )
-            .ToDictionaryAsync(
+            .ToListAsync(ct);
+
+        var upgradeCategories = upgradeCategoryRows
+            .ToDictionary(
                 row => row.UpgradeLicenseCategoryName ?? string.Empty,
-                row => row,
-                ct);
+                row => new UpgradeCategoryResponse
+                {
+                    LicenseCategoryName = row.LicenseCategoryName,
+                    UpgradeLicenseCategoryName = row.UpgradeLicenseCategoryName,
+                    ItemHierarchyId = row.ItemHierarchyId,
+                    ItemHierarchyName = row.ItemHierarchyName,
+                },
+                StringComparer.OrdinalIgnoreCase);
+
+        var allowedCategoryIds = primaryCategory is null
+            ? []
+            : upgradeCategoryRows
+                .Select(row => (byte)row.UpgradeLicenseCategoryId)
+                .Append(primaryCategory.LicenseCategoryId)
+                .Distinct()
+                .ToList();
 
         var seats = await _db.LicenseSeat
             .Where(ls => ls.LicenseId == license.LicenseId)
@@ -1033,13 +1064,14 @@ public sealed class CartOrderRepository : ICartOrderRepository
 
         // ── Product options ──────────────────────────────────────────────────
         List<ProductOptionResponse> productOptions = [];
-        if (primaryCategory is not null)
+        if (allowedCategoryIds.Count > 0)
         {
             var products = await (
                 from plc in _db.ProductLicenseCategory
                 join p in _db.Product on plc.ProductId equals p.ProductId
                 join pt in _db.ProductType on p.ProductTypeId equals pt.ProductTypeId
-                where plc.LicenseCategoryId == primaryCategory.LicenseCategoryId
+                join lc in _db.LicenseCategory on plc.LicenseCategoryId equals lc.LicenseCategoryId
+                where allowedCategoryIds.Contains(plc.LicenseCategoryId)
                    && (p.ProductTypeId == 1 || p.ProductTypeId == 2)
                 select new
                 {
@@ -1047,6 +1079,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
                     ProductName = p.ProductDescription,
                     TypeDescription = pt.ProductTypeDescription,
                     OptionLicenseCategoryId = plc.LicenseCategoryId,
+                    OptionLicenseCategoryName = lc.LicenseCategoryName,
                 }
             ).ToListAsync(ct);
 
@@ -1074,7 +1107,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
                 {
                     ProductId = p.ProductId,
                     ProductName = p.ProductName ?? string.Empty,
-                    LicenseCategoryName = primaryCategory.LicenseCategoryName,
+                    LicenseCategoryName = p.OptionLicenseCategoryName,
                     ProductTypeDescription = p.TypeDescription,
                     Price = allPricing.FirstOrDefault(pp => pp.ProductId == p.ProductId)?.RetailPrice,
                     Years = allYears

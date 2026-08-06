@@ -21,15 +21,13 @@ public sealed class LicenseOptionsController : ControllerBase
         [FromQuery] string? locale,
         CancellationToken ct)
     {
-        _ = locale;
-
         if (string.IsNullOrWhiteSpace(message_key))
             return BadRequest(ApiResponse<LicenseOptionsResponse>.ValidationFailure(["message_key is required"]));
 
         if (!Guid.TryParse(message_key, out _))
             return BadRequest(ApiResponse<LicenseOptionsResponse>.ValidationFailure(["message_key must be a valid GUID"]));
 
-        var result = await _service.GetLicenseOptionsByMessageKeyAsync(message_key, ct);
+        var result = await _service.GetLicenseOptionsByMessageKeyAsync(message_key, locale, ct);
 
         return result.Kind switch
         {

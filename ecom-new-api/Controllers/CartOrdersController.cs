@@ -74,31 +74,6 @@ public sealed class CartOrdersController : ControllerBase
         };
     }
 
-    // ── GET /license-options ────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Fetches license + available products for a license identified by message_key GUID.
-    /// First call made by the interstitial cart page on load.
-    /// </summary>
-    [HttpGet("/license-options")]
-    [ProducesResponseType(typeof(ApiResponse<LicenseOptionsResponse>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ApiResponse<LicenseOptionsResponse>), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(ApiResponse<LicenseOptionsResponse>), StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetLicenseOptions(
-        [FromQuery] string? message_key,
-        [FromQuery] string? locale,   // accepted to match legacy contract; not yet used
-        CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(message_key))
-            return MapResult(ServiceResult<LicenseOptionsResponse>.Invalid(["message_key is required"]));
-
-        if (!Guid.TryParse(message_key, out _))
-            return MapResult(ServiceResult<LicenseOptionsResponse>.Invalid(["message_key must be a valid GUID"]));
-
-        var result = await _service.GetLicenseOptionsByMessageKeyAsync(message_key, locale, ct);
-        return MapResult(result);
-    }
-
     // ── GET /configure ──────────────────────────────────────────────────────────
 
     /// <summary>
