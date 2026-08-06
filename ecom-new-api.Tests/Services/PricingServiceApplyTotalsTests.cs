@@ -1,5 +1,5 @@
 using ecom_new_api.Models.Responses;
-using ecom_new_api.Services;
+using ecom_new_api.Services.Pricing;
 using Xunit;
 
 namespace ecom_new_api_tests.Services;

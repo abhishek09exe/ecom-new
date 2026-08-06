@@ -1,12 +1,12 @@
 using ecom_new_api.Models.Requests;
 using ecom_new_api.Models.Responses;
 
-namespace ecom_new_api.Services;
+namespace ecom_new_api.Services.CartOrders;
 
 /// <summary>
 /// Orchestrates cart order creation and read operations.
 /// Sits between the controller (HTTP concerns) and the repository (DB concerns).
-/// All business logic — validation, quote-key pivot, vendor order code generation — lives here.
+/// All business logic - validation, quote-key pivot, vendor order code generation - lives here.
 /// </summary>
 public interface ICartOrderService
 {
@@ -17,12 +17,6 @@ public interface ICartOrderService
     /// </summary>
     Task<ServiceResult<CartOrderResponse>> CreateCartOrderAsync(
         CartOrderCreateRequest request, CancellationToken ct = default);
-
-    Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsAsync(
-        string keycode, CancellationToken ct = default);
-
-    Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsByMessageKeyAsync(
-        string messageKey, CancellationToken ct = default);
 
     Task<ServiceResult<ConfigureResponse>> GetConfigureAsync(
         string keycode, CancellationToken ct = default);

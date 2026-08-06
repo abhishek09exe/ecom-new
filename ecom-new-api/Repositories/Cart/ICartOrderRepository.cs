@@ -1,7 +1,7 @@
 using ecom_new_api.Models.Requests;
 using ecom_new_api.Models.Responses;
 
-namespace ecom_new_api.Repositories;
+namespace ecom_new_api.Repositories.Cart;
 
 /// <summary>
 /// Data-access contract for cart orders.
@@ -77,28 +77,6 @@ public interface ICartOrderRepository
     /// </summary>
     Task<string?> FindExistingVendorOrderCodeByKeyAsync(
         string key, CancellationToken ct = default);
-
-    // ── Read path (GET endpoints) ───────────────────────────────────────────────
-
-    /// <summary>
-    /// Resolves a license_key GUID to the Webroot keycode via license_key → license tables.
-    /// Returns null when the GUID does not exist in license_key.
-    /// </summary>
-    Task<string?> ResolveKeycodeFromMessageKeyAsync(string messageKey, CancellationToken ct = default);
-
-    /// <summary>
-    /// Fetches license + available products for a keycode.
-    ///
-    /// Maps to:
-    ///   usp_cart_select_message_key(@key) — resolves keycode to license record
-    ///   usp_license_select_license_by_id(@license_id) — license details
-    ///   usp_cart_select_license_profile(@license_id) — trial/full product profile
-    ///   usp_cart_select_license_billing_model(@license_id) — billing model tooltip data
-    ///
-    /// TODO: REPLACE WITH ACTUAL — implement when DB is available.
-    /// </summary>
-    Task<LicenseOptionsResponse?> SelectLicenseOptionsAsync(
-        string keycode, CancellationToken ct = default);
 
     /// <summary>
     /// Returns renewal product options for a license.

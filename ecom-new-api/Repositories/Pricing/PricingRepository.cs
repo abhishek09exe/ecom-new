@@ -4,9 +4,9 @@ using ecom_new_api.Data.Entities;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
-namespace ecom_new_api.Repositories;
+namespace ecom_new_api.Repositories.Pricing;
 
-public class PricingRepository
+public sealed class PricingRepository : IPricingRepository
 {
     private readonly AppDbContext _ctx;
 
@@ -15,10 +15,10 @@ public class PricingRepository
     public async Task<List<ConfiguratorPricingResult>> GetConfiguratorPricingAsync(
         string itemJson, string bundleJson)
     {
-        // Explicit SqlParameter required — string defaults to NVARCHAR(4000) and can truncate large JSON
-        var p1 = new SqlParameter("@item_json",   SqlDbType.NVarChar, -1) { Value = itemJson };
+        // Explicit SqlParameter required; string defaults to NVARCHAR(4000) and can truncate large JSON payloads.
+        var p1 = new SqlParameter("@item_json", SqlDbType.NVarChar, -1) { Value = itemJson };
         var p2 = new SqlParameter("@bundle_json", SqlDbType.NVarChar, -1) { Value = bundleJson };
-        var p3 = new SqlParameter("@opt_args",    SqlDbType.VarChar, 100) { Value = DBNull.Value };
+        var p3 = new SqlParameter("@opt_args", SqlDbType.VarChar, 100) { Value = DBNull.Value };
 
         return await _ctx.Database
             .SqlQueryRaw<ConfiguratorPricingResult>(

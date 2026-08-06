@@ -1,5 +1,5 @@
 using ecom_new_api.Models.Requests;
-using ecom_new_api.Services;
+using ecom_new_api.Services.Pricing;
 using Microsoft.AspNetCore.Mvc;
 
 namespace ecom_new_api.Controllers;

@@ -4,17 +4,17 @@ using System.Text.Json.Serialization;
 using ecom_new_api.Data.Entities;
 using ecom_new_api.Models.Requests;
 using ecom_new_api.Models.Responses;
-using ecom_new_api.Repositories;
+using ecom_new_api.Repositories.Pricing;
 
-namespace ecom_new_api.Services;
+namespace ecom_new_api.Services.Pricing;
 
 public class PricingService : IPricingService
 {
-    private readonly PricingRepository _repo;
+    private readonly IPricingRepository _repo;
     private readonly MessageKeyService _msgKey;
     private readonly CurrencyService   _currency;
 
-    public PricingService(PricingRepository repo, MessageKeyService msgKey, CurrencyService currency)
+    public PricingService(IPricingRepository repo, MessageKeyService msgKey, CurrencyService currency)
         => (_repo, _msgKey, _currency) = (repo, msgKey, currency);
 
     public async Task<BundlePricingResponse> GetBundlePricingAsync(BundlePricingRequest request)

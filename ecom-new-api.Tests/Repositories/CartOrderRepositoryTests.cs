@@ -1,7 +1,7 @@
 using ecom_new_api.Data;
 using ecom_new_api.Data.Entities;
 using ecom_new_api.Models.Requests;
-using ecom_new_api.Repositories;
+using ecom_new_api.Repositories.Cart;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;

@@ -1,7 +1,12 @@
 using ecom_new_api.Data;
-using ecom_new_api.Infrastructure;
-using ecom_new_api.Repositories;
+using ecom_new_api.Helpers;
+using ecom_new_api.Repositories.Cart;
+using ecom_new_api.Repositories.LicenseOptions;
+using ecom_new_api.Repositories.Pricing;
 using ecom_new_api.Services;
+using ecom_new_api.Services.CartOrders;
+using ecom_new_api.Services.LicenseOptions;
+using ecom_new_api.Services.Pricing;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -24,13 +29,15 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // ── Repositories ────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
-builder.Services.AddScoped<PricingRepository>();
+builder.Services.AddScoped<ILicenseOptionsRepository, LicenseOptionsRepository>();
+builder.Services.AddScoped<IPricingRepository, PricingRepository>();
 
 // ── Services ────────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderService, CartOrderService>();
 builder.Services.AddScoped<CurrencyService>();
 builder.Services.AddScoped<MessageKeyService>();
 builder.Services.AddScoped<IPricingService, PricingService>();
+builder.Services.AddScoped<ILicenseOptionsService, LicenseOptionsService>();
 
 // ── Middleware pipeline (not yet implemented) ────────────────────────────────────
 // TODO: REPLACE WITH ACTUAL — register these middleware classes once implemented:

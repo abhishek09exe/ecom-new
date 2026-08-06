@@ -6,7 +6,7 @@ using ecom_new_api.Models.Requests;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
-namespace ecom_new_api.Services;
+namespace ecom_new_api.Services.Pricing;
 
 // ── SP result POCOs ──────────────────────────────────────────────────────────────
 

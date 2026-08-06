@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json;
 
-namespace ecom_new_api.Infrastructure;
+namespace ecom_new_api.Helpers;
 
 /// <summary>
 /// Converts PascalCase/camelCase property names to snake_case for JSON serialisation.

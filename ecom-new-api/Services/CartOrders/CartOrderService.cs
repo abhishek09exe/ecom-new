@@ -1,8 +1,8 @@
 using ecom_new_api.Models.Requests;
 using ecom_new_api.Models.Responses;
-using ecom_new_api.Repositories;
+using ecom_new_api.Repositories.Cart;
 
-namespace ecom_new_api.Services;
+namespace ecom_new_api.Services.CartOrders;
 
 /// <summary>
 /// Core cart order service.
@@ -21,7 +21,7 @@ public sealed class CartOrderService : ICartOrderService
         _config = config;
     }
 
-    // ── POST /cart/cart-orders ──────────────────────────────────────────────────
+    // -- POST /cart/cart-orders -------------------------------------------------
 
     public async Task<ServiceResult<CartOrderResponse>> CreateCartOrderAsync(
         CartOrderCreateRequest request, CancellationToken ct = default)
@@ -32,27 +32,27 @@ public sealed class CartOrderService : ICartOrderService
             return ServiceResult<CartOrderResponse>.Invalid(errors);
 
         // 2) Quote-key pivot: if the key already has a pending cart, update instead of insert
-        //    TODO: REPLACE WITH ACTUAL — wire UpdateCartOrderAsync once available
+        //    TODO: REPLACE WITH ACTUAL - wire UpdateCartOrderAsync once available
         if (!string.IsNullOrWhiteSpace(request.MessageKey))
         {
             var existingCode = await _repo.FindExistingVendorOrderCodeByKeyAsync(request.MessageKey, ct);
             if (existingCode is not null)
             {
                 _logger.LogInformation(
-                    "Key {Key} resolved to existing cart {VendorOrderCode} — pivoting to update",
+                    "Key {Key} resolved to existing cart {VendorOrderCode} - pivoting to update",
                     request.MessageKey, existingCode);
 
-                // TODO: REPLACE WITH ACTUAL — call usp_cart_update_cart_order here
+                // TODO: REPLACE WITH ACTUAL - call usp_cart_update_cart_order here
                 // For now fall through to insert so the endpoint keeps responding
                 _logger.LogWarning(
-                    "Quote-key update path not yet implemented — proceeding with insert as placeholder");
+                    "Quote-key update path not yet implemented - proceeding with insert as placeholder");
             }
         }
 
-        // 3) Insert — returns vendor_order_code
+        // 3) Insert - returns vendor_order_code
         var vendorOrderCode = await _repo.InsertCartOrderAsync(request, ct);
 
-        // 4) Re-read — the API response is the hydrated aggregate, NOT the raw insert output
+        // 4) Re-read - the API response is the hydrated aggregate, NOT the raw insert output
         var order = await _repo.SelectCartOrderAsync(vendorOrderCode, ct);
         if (order is null)
         {
@@ -71,32 +71,7 @@ public sealed class CartOrderService : ICartOrderService
         return ServiceResult<CartOrderResponse>.Ok(order);
     }
 
-    // ── GET endpoints ───────────────────────────────────────────────────────────
-
-    public async Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsAsync(
-        string keycode, CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(keycode))
-            return ServiceResult<LicenseOptionsResponse>.Invalid(["keycode is required"]);
-
-        var result = await _repo.SelectLicenseOptionsAsync(keycode, ct);
-        return result is null
-            ? ServiceResult<LicenseOptionsResponse>.NotFound($"No license found for keycode '{keycode}'")
-            : ServiceResult<LicenseOptionsResponse>.Ok(result);
-    }
-
-    public async Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsByMessageKeyAsync(
-        string messageKey, CancellationToken ct = default)
-    {
-        var keycode = await _repo.ResolveKeycodeFromMessageKeyAsync(messageKey, ct);
-        if (keycode is null)
-            return ServiceResult<LicenseOptionsResponse>.NotFound($"No license found for message_key '{messageKey}'");
-
-        var result = await _repo.SelectLicenseOptionsAsync(keycode, ct);
-        return result is null
-            ? ServiceResult<LicenseOptionsResponse>.NotFound($"No license found for message_key '{messageKey}'")
-            : ServiceResult<LicenseOptionsResponse>.Ok(result);
-    }
+    // -- GET endpoints ----------------------------------------------------------
 
     public async Task<ServiceResult<ConfigureResponse>> GetConfigureAsync(
         string keycode, CancellationToken ct = default)
@@ -122,7 +97,7 @@ public sealed class CartOrderService : ICartOrderService
             : ServiceResult<UpgradeResponse>.Ok(result);
     }
 
-    // ── Validation ──────────────────────────────────────────────────────────────
+    // -- Validation -------------------------------------------------------------
 
     private List<string> ValidateCreateRequest(CartOrderCreateRequest r)
     {
