@@ -14,6 +14,9 @@ public sealed class License
     [MaxLength(40)]
     public string Keycode { get; set; } = default!;
 
+    [Column("customer_id")]
+    public int? CustomerId { get; set; }
+
     [Column("product_line_id")]
     public int ProductLineId { get; set; }
 
@@ -29,6 +32,12 @@ public sealed class License
     [Column("license_keycode_type_id")]
     public int? LicenseKeycodeTypeId { get; set; }
 
+    [Column("max_daily_activations")]
+    public int? MaxDailyActivations { get; set; }
+
     [Column("license_expiration_date")]
     public DateTime? LicenseExpirationDate { get; set; }
+
+    [Column("insert_date")]
+    public DateTime? InsertDate { get; set; }
 }

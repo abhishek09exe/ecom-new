@@ -18,6 +18,12 @@ public interface ICartOrderService
     Task<ServiceResult<CartOrderResponse>> CreateCartOrderAsync(
         CartOrderCreateRequest request, CancellationToken ct = default);
 
+    Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsAsync(
+        string keycode, string? locale = null, CancellationToken ct = default);
+
+    Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsByMessageKeyAsync(
+        string messageKey, string? locale = null, CancellationToken ct = default);
+
     Task<ServiceResult<ConfigureResponse>> GetConfigureAsync(
         string keycode, CancellationToken ct = default);
 

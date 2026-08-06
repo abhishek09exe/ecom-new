@@ -357,6 +357,46 @@ public sealed class CartOrderServiceTests
         _repoMock.Verify(r => r.InsertCartOrderAsync(request, It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    // ── GetLicenseOptionsAsync ────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task GetLicenseOptionsAsync_EmptyKeycode_ReturnsValidationError(string keycode)
+    {
+        var sut = CreateSut();
+        var result = await sut.GetLicenseOptionsAsync(keycode);
+
+        Assert.Equal(ServiceResultKind.ValidationError, result.Kind);
+        Assert.Contains("keycode is required", result.ValidationErrors);
+    }
+
+    [Fact]
+    public async Task GetLicenseOptionsAsync_NotFound_ReturnsNotFound()
+    {
+        var sut = CreateSut();
+        _repoMock.Setup(r => r.SelectLicenseOptionsAsync("BAD_KEY", null, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync((LicenseOptionsResponse?)null);
+
+        var result = await sut.GetLicenseOptionsAsync("BAD_KEY");
+
+        Assert.Equal(ServiceResultKind.NotFound, result.Kind);
+    }
+
+    [Fact]
+    public async Task GetLicenseOptionsAsync_Found_ReturnsOk()
+    {
+        var sut = CreateSut();
+        var licenseResponse = new LicenseOptionsResponse { Keycode = "KEY123" };
+        _repoMock.Setup(r => r.SelectLicenseOptionsAsync("KEY123", null, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(licenseResponse);
+
+        var result = await sut.GetLicenseOptionsAsync("KEY123");
+
+        Assert.Equal(ServiceResultKind.Ok, result.Kind);
+        Assert.Equal("KEY123", result.Data!.Keycode);
+    }
+
     // ── GetConfigureAsync ─────────────────────────────────────────────────────
 
     [Theory]
@@ -435,4 +475,64 @@ public sealed class CartOrderServiceTests
         Assert.Equal("KEY", result.Data!.Keycode);
     }
 
+    // ── GetLicenseOptionsByMessageKeyAsync ────────────────────────────────────
+
+    private const string ValidGuid = "E151E1C7-018B-46EF-93A3-2CB7E01805C8";
+
+    [Fact]
+    public async Task GetLicenseOptionsByMessageKeyAsync_ResolvesKeycode_ReturnsOk()
+    {
+        var sut = CreateSut();
+        var licenseResponse = new LicenseOptionsResponse { Keycode = "KEYCODE123" };
+        _repoMock.Setup(r => r.ResolveKeycodeFromMessageKeyAsync(ValidGuid, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync("KEYCODE123");
+        _repoMock.Setup(r => r.SelectLicenseOptionsAsync("KEYCODE123", null, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(licenseResponse);
+
+        var result = await sut.GetLicenseOptionsByMessageKeyAsync(ValidGuid);
+
+        Assert.Equal(ServiceResultKind.Ok, result.Kind);
+        Assert.Equal("KEYCODE123", result.Data!.Keycode);
+    }
+
+    [Fact]
+    public async Task GetLicenseOptionsByMessageKeyAsync_MessageKeyNotFound_ReturnsNotFound()
+    {
+        var sut = CreateSut();
+        _repoMock.Setup(r => r.ResolveKeycodeFromMessageKeyAsync(ValidGuid, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync((string?)null);
+
+        var result = await sut.GetLicenseOptionsByMessageKeyAsync(ValidGuid);
+
+        Assert.Equal(ServiceResultKind.NotFound, result.Kind);
+    }
+
+    [Fact]
+    public async Task GetLicenseOptionsByMessageKeyAsync_KeycodeResolvesButLicenseNotFound_ReturnsNotFound()
+    {
+        var sut = CreateSut();
+        _repoMock.Setup(r => r.ResolveKeycodeFromMessageKeyAsync(ValidGuid, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync("KEYCODE123");
+        _repoMock.Setup(r => r.SelectLicenseOptionsAsync("KEYCODE123", null, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync((LicenseOptionsResponse?)null);
+
+        var result = await sut.GetLicenseOptionsByMessageKeyAsync(ValidGuid);
+
+        Assert.Equal(ServiceResultKind.NotFound, result.Kind);
+    }
+
+    [Fact]
+    public async Task GetLicenseOptionsByMessageKeyAsync_ForwardsLocaleToRepository()
+    {
+        var sut = CreateSut();
+        _repoMock.Setup(r => r.ResolveKeycodeFromMessageKeyAsync(ValidGuid, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync("KEYCODE123");
+        _repoMock.Setup(r => r.SelectLicenseOptionsAsync("KEYCODE123", "en-US", It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new LicenseOptionsResponse { Keycode = "KEYCODE123" });
+
+        var result = await sut.GetLicenseOptionsByMessageKeyAsync(ValidGuid, "en-US");
+
+        Assert.Equal(ServiceResultKind.Ok, result.Kind);
+        _repoMock.Verify(r => r.SelectLicenseOptionsAsync("KEYCODE123", "en-US", It.IsAny<CancellationToken>()), Times.Once);
+    }
 }

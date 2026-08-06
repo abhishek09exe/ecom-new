@@ -38,8 +38,26 @@ public sealed class AppDbContext : DbContext
     public DbSet<LicenseAttributeLicenseValue> LicenseAttributeLicenseValue => Set<LicenseAttributeLicenseValue>();
     public DbSet<License> License => Set<License>();
     public DbSet<LicenseStatus> LicenseStatus => Set<LicenseStatus>();
+    public DbSet<LicenseType> LicenseType => Set<LicenseType>();
     public DbSet<LicenseCategoryLicense> LicenseCategoryLicense => Set<LicenseCategoryLicense>();
     public DbSet<LicenseSeat> LicenseSeat => Set<LicenseSeat>();
+    public DbSet<LicenseActiveSeats> LicenseActiveSeats => Set<LicenseActiveSeats>();
+    public DbSet<LicenseStorage> LicenseStorage => Set<LicenseStorage>();
+    public DbSet<LicenseParent> LicenseParent => Set<LicenseParent>();
+    public DbSet<LicenseAttribute> LicenseAttribute => Set<LicenseAttribute>();
+    public DbSet<LicenseAttributeLicense> LicenseAttributeLicense => Set<LicenseAttributeLicense>();
+    public DbSet<LicenseDistributionMethod> LicenseDistributionMethod => Set<LicenseDistributionMethod>();
+    public DbSet<LicenseNextBillDate> LicenseNextBillDate => Set<LicenseNextBillDate>();
+    public DbSet<LicenseHistory> LicenseHistory => Set<LicenseHistory>();
+    public DbSet<LicenseDistributionMethodChannel> LicenseDistributionMethodChannel => Set<LicenseDistributionMethodChannel>();
+    public DbSet<Channel> Channel => Set<Channel>();
+    public DbSet<Customer> Customer => Set<Customer>();
+    public DbSet<OrderItem> OrderItem => Set<OrderItem>();
+    public DbSet<OrderItemLicense> OrderItemLicense => Set<OrderItemLicense>();
+    public DbSet<LicenseCapability> LicenseCapability => Set<LicenseCapability>();
+    public DbSet<CapabilityType> CapabilityType => Set<CapabilityType>();
+    public DbSet<LicenseProfileFunctionRow> LicenseProfileFunctionRows => Set<LicenseProfileFunctionRow>();
+    public DbSet<LicenseByIdProcedureRow> LicenseByIdProcedureRows => Set<LicenseByIdProcedureRow>();
 
     // ── Product tables ──────────────────────────────────────────────────────────
     public DbSet<Product> Product => Set<Product>();
@@ -48,9 +66,13 @@ public sealed class AppDbContext : DbContext
     public DbSet<ProductLine> ProductLine => Set<ProductLine>();
     public DbSet<ProductLineProduct> ProductLineProduct => Set<ProductLineProduct>();
     public DbSet<ProductLicenseCategory> ProductLicenseCategory => Set<ProductLicenseCategory>();
+    public DbSet<ProductLicenseCategorySeat> ProductLicenseCategorySeat => Set<ProductLicenseCategorySeat>();
+    public DbSet<ProductLicenseCategoryYears> ProductLicenseCategoryYears => Set<ProductLicenseCategoryYears>();
+    public DbSet<ProductLicenseCategoryUpgrade> ProductLicenseCategoryUpgrade => Set<ProductLicenseCategoryUpgrade>();
     public DbSet<ProductYears> ProductYears => Set<ProductYears>();
     public DbSet<ProductSeat> ProductSeat => Set<ProductSeat>();
     public DbSet<ProductPricing> ProductPricing => Set<ProductPricing>();
+    public DbSet<ItemHierarchy> ItemHierarchy => Set<ItemHierarchy>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -188,5 +210,17 @@ public sealed class AppDbContext : DbContext
             .HasOne(cll => cll.Currency)
             .WithMany()
             .HasForeignKey(cll => cll.CurrencyId);
+        // keyless projection for dbo.fn_license_select_license_profile output
+        modelBuilder.Entity<LicenseProfileFunctionRow>()
+            .HasNoKey()
+            .ToView(null);
+
+        // keyless table/projection entities
+        modelBuilder.Entity<LicenseActiveSeats>()
+            .HasNoKey();
+
+        modelBuilder.Entity<LicenseByIdProcedureRow>()
+            .HasNoKey()
+            .ToView(null);
     }
 }

@@ -23,4 +23,7 @@ public sealed class LicenseCategory
 
     [Column("max_order_quantity")]
     public int? MaxOrderQuantity { get; set; }
+
+    [Column("base_capability_id")]
+    public int? BaseCapabilityId { get; set; }
 }
