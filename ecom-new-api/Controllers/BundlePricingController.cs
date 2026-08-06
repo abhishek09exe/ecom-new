@@ -9,7 +9,6 @@ namespace ecom_new_api.Controllers;
 /// Called by the configure page every time the user adjusts seats, years, or billing model.
 /// </summary>
 [ApiController]
-[Route("api/bundle-pricing")]
 public sealed class BundlePricingController : ControllerBase
 {
     private readonly IPricingService _pricing;
@@ -28,7 +27,7 @@ public sealed class BundlePricingController : ControllerBase
     /// <response code="400">Invalid request parameters.</response>
     /// <response code="422">Stored procedure returned no pricing rows for the given items.</response>
     /// <response code="500">Unexpected database or server error.</response>
-    [HttpGet]
+    [HttpGet("/bundle-pricing")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]

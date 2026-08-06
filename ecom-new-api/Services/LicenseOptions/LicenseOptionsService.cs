@@ -17,7 +17,7 @@ public sealed class LicenseOptionsService : ILicenseOptionsService
         if (keycode is null)
             return ServiceResult<LicenseOptionsResponse>.NotFound($"No license found for message_key '{messageKey}'");
 
-        var result = await _repo.SelectLicenseOptionsAsync(keycode, ct);
+        var result = await _repo.SelectLicenseOptionsAsync(messageKey, ct);
         return result is null
             ? ServiceResult<LicenseOptionsResponse>.NotFound($"No license found for message_key '{messageKey}'")
             : ServiceResult<LicenseOptionsResponse>.Ok(result);

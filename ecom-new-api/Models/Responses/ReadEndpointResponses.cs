@@ -25,17 +25,12 @@ public sealed class LicenseProfileEntryResponse
 
 public sealed class LicenseOptionsResponse
 {
-    public string Keycode { get; init; } = default!;
-    public string? LicenseKey { get; init; }
-    public string? LicenseStatus { get; init; }
-    public string? ProductLine { get; init; }
-    public string? LicenseCategory { get; init; }
-    public string? LicenseCategoryDescription { get; init; }
-    public int? LicenseSeats { get; init; }
-    public DateTime? ExpirationDate { get; init; }
-    public List<ProductOptionResponse> ProductOptions { get; init; } = [];
-    public LicenseInfoResponse? License { get; init; }
-    public Dictionary<string, LicenseProfileEntryResponse> LicenseProfile { get; init; } = [];
+    public Dictionary<string, object?> License { get; init; } = [];
+    public bool LicenseVerified { get; init; }
+    public Dictionary<string, Dictionary<string, object?>> LicenseProfile { get; init; } = [];
+    public object? LicenseSiteId { get; init; }
+    public Dictionary<string, Dictionary<string, object?>> UpgradeCategories { get; init; } = [];
+    public Dictionary<string, Dictionary<string, object?>> BillingModels { get; init; } = [];
 }
 
 /// <summary>

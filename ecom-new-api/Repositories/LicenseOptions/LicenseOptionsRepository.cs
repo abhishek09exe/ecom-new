@@ -1,141 +1,240 @@
+using System.Data;
+using System.Data.Common;
+using System.Text.Json;
 using ecom_new_api.Data;
 using ecom_new_api.Models.Responses;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace ecom_new_api.Repositories.LicenseOptions;
 
 public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
 {
-    private readonly AppDbContext _db;
+   private readonly AppDbContext _db;
 
-    public LicenseOptionsRepository(AppDbContext db) => _db = db;
+   public LicenseOptionsRepository(AppDbContext db) => _db = db;
 
-    public async Task<LicenseOptionsResponse?> SelectLicenseOptionsAsync(
-        string keycode,
-        CancellationToken ct = default)
-    {
-        var license = await (
-            from l in _db.License
-            join s in _db.LicenseStatus on l.LicenseStatusId equals s.LicenseStatusId
-            join pl in _db.ProductLine on l.ProductLineId equals pl.ProductLineId
-            join lkRow in _db.LicenseKey on l.LicenseId equals lkRow.LicenseId into lkJoin
-            from lkRow in lkJoin.DefaultIfEmpty()
-            where l.Keycode == keycode
-            select new
-            {
-                l.LicenseId,
-                l.Keycode,
-                l.LicenseExpirationDate,
-                StatusDescription = s.LicenseStatusDescription,
-                ProductLineDescription = pl.ProductLineDescription,
-                LicenseKeyGuid = lkRow == null ? (Guid?)null : (Guid?)lkRow.Key
-            }
-        ).FirstOrDefaultAsync(ct);
+   private async Task<List<Dictionary<string, object?>>> ExecToDictionaryAsync(
+       string storedProcedure,
+       IEnumerable<DbParameter> parameters,
+       CancellationToken ct)
+   {
+       var results = new List<Dictionary<string, object?>>();
+       var conn = _db.Database.GetDbConnection();
+       var shouldClose = false;
+       if (conn.State != ConnectionState.Open)
+       {
+           await conn.OpenAsync(ct);
+           shouldClose = true;
+       }
 
-        if (license is null) return null;
+       await using (var cmd = conn.CreateCommand())
+       {
+           cmd.CommandText = storedProcedure;
+           cmd.CommandType = CommandType.StoredProcedure;
+           foreach (var p in parameters)
+           {
+               var clone = cmd.CreateParameter();
+               clone.ParameterName = p.ParameterName;
+               clone.Value = p.Value ?? DBNull.Value;
+               clone.DbType = p.DbType;
+               cmd.Parameters.Add(clone);
+           }
 
-        var categoryRows = await (
-            from lcl in _db.LicenseCategoryLicense
-            join lc in _db.LicenseCategory on lcl.LicenseCategoryId equals lc.LicenseCategoryId
-            where lcl.LicenseId == license.LicenseId
-            orderby lcl.LicenseCategoryLicenseId descending
-            select new
-            {
-                lc.LicenseCategoryId,
-                lc.LicenseCategoryName,
-                lc.LicenseCategoryDescription,
-                lcl.StartDate,
-                EndDate = lcl.EndDate
-            }
-        ).ToListAsync(ct);
+           await using var reader = await cmd.ExecuteReaderAsync(ct);
+           while (await reader.ReadAsync(ct))
+           {
+               var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+               for (int i = 0; i < reader.FieldCount; i++)
+               {
+                   var name = reader.GetName(i);
+                   row[name] = await reader.IsDBNullAsync(i, ct) ? null : reader.GetValue(i);
+               }
+               results.Add(row);
+           }
+       }
 
-        var primaryCategory = categoryRows.FirstOrDefault();
+       if (shouldClose)
+           await conn.CloseAsync();
 
-        var seats = await _db.LicenseSeat
-            .Where(ls => ls.LicenseId == license.LicenseId)
-            .OrderByDescending(ls => ls.LicenseSeatId)
-            .Select(ls => (int?)ls.LicenseSeats)
-            .FirstOrDefaultAsync(ct);
+       return results;
+   }
 
-        List<ProductOptionResponse> productOptions = [];
-        if (primaryCategory is not null)
-        {
-            var products = await (
-                from plc in _db.ProductLicenseCategory
-                join p in _db.Product on plc.ProductId equals p.ProductId
-                join pt in _db.ProductType on p.ProductTypeId equals pt.ProductTypeId
-                where plc.LicenseCategoryId == primaryCategory.LicenseCategoryId
-                   && (p.ProductTypeId == 1 || p.ProductTypeId == 2)
-                select new { p.ProductId, ProductName = p.ProductDescription, TypeDescription = pt.ProductTypeDescription }
-            ).ToListAsync(ct);
+   public async Task<LicenseOptionsResponse?> SelectLicenseOptionsAsync(
+       string messageKey,
+       CancellationToken ct = default)
+   {
+       if (string.IsNullOrWhiteSpace(messageKey))
+           return null;
 
-            if (products.Count > 0)
-            {
-                var productIds = products.Select(p => p.ProductId).ToList();
+       var normalizedLocale = "en_US";
 
-                var allYears = await _db.ProductYears
-                    .Where(py => productIds.Contains(py.ProductId))
-                    .Select(py => new { py.ProductId, py.Years })
-                    .ToListAsync(ct);
+       var messageKeyParam = new SqlParameter("@message_key", messageKey);
+       var messageKeyRows = await ExecToDictionaryAsync(
+           "usp_cart_select_message_key",
+           new[] { messageKeyParam },
+           ct);
 
-                var allSeats = await _db.ProductSeat
-                    .Where(ps => productIds.Contains(ps.ProductId))
-                    .Select(ps => new { ps.ProductId, ps.Seats })
-                    .ToListAsync(ct);
+       var messageKeyRow = messageKeyRows.FirstOrDefault();
+       if (messageKeyRow is null || !messageKeyRow.TryGetValue("message_key_json", out var messageJsonObj))
+           return null;
 
-                var allPricing = await _db.ProductPricing
-                    .Where(pp => productIds.Contains(pp.ProductId))
-                    .Select(pp => new { pp.ProductId, pp.RetailPrice })
-                    .ToListAsync(ct);
+       var messagePayload = ParseJsonObject(messageJsonObj?.ToString());
+       if (messagePayload is null)
+           return null;
 
-                productOptions = products.Select(p => new ProductOptionResponse
-                {
-                    ProductId = p.ProductId,
-                    ProductName = p.ProductName ?? string.Empty,
-                    LicenseCategoryName = primaryCategory.LicenseCategoryName,
-                    ProductTypeDescription = p.TypeDescription,
-                    Price = allPricing.FirstOrDefault(pp => pp.ProductId == p.ProductId)?.RetailPrice,
-                    Years = allYears.Where(py => py.ProductId == p.ProductId).Select(py => py.Years).ToList(),
-                    Seats = allSeats.Where(ps => ps.ProductId == p.ProductId).Select(ps => ps.Seats).ToList(),
-                }).ToList();
-            }
-        }
+       var licenseId = TryGetInt(messagePayload, "license_id");
+       if (!licenseId.HasValue)
+           return null;
 
-        var licenseProfile = categoryRows.ToDictionary(
-            row => row.LicenseCategoryName,
-            row => new LicenseProfileEntryResponse
-            {
-                LicenseCategoryName = row.LicenseCategoryName,
-                LicenseCategoryDescription = row.LicenseCategoryDescription,
-                StartDate = row.StartDate,
-                ExpirationDate = row.EndDate,
-                LicenseSeats = seats,
-                CategoryTypeName = null,
-            });
+       var licenseIdParam = new SqlParameter("@license_id", licenseId.Value);
+       var licenseRows = await ExecToDictionaryAsync(
+           "usp_license_select_license_by_id",
+           new[] { licenseIdParam },
+           ct);
 
-        var licenseInfo = new LicenseInfoResponse
-        {
-            Keycode = license.Keycode,
-            LicenseKey = license.LicenseKeyGuid?.ToString("D"),
-            LicenseCategoryName = primaryCategory?.LicenseCategoryName,
-            LicenseSeats = seats,
-        };
+       var license = licenseRows.FirstOrDefault() ?? new Dictionary<string, object?>();
+       var verified = license.Count > 0;
 
-        return new LicenseOptionsResponse
-        {
-            Keycode = license.Keycode,
-            LicenseKey = license.LicenseKeyGuid?.ToString("D"),
-            LicenseStatus = license.StatusDescription,
-            ProductLine = license.ProductLineDescription,
-            LicenseCategory = primaryCategory?.LicenseCategoryName,
-            LicenseCategoryDescription = primaryCategory?.LicenseCategoryDescription,
-            LicenseSeats = seats,
-            ExpirationDate = license.LicenseExpirationDate,
-            ProductOptions = productOptions,
-            License = licenseInfo,
-            LicenseProfile = licenseProfile,
-        };
-    }
+       var resolvedMessageKey = messageKey;
+       if (license.TryGetValue("license_key", out var licenseKeyValue) && licenseKeyValue is not null)
+       {
+           resolvedMessageKey = licenseKeyValue.ToString() ?? messageKey;
+       }
+
+       var profileParam = new SqlParameter("@license_id", licenseId.Value);
+       var profileRows = await ExecToDictionaryAsync(
+           "usp_cart_select_license_profile",
+           new[] { profileParam },
+           ct);
+
+       var profile = profileRows
+           .Where(r => r.TryGetValue("license_category_name", out var n) && n is not null)
+           .ToDictionary(
+               r => r["license_category_name"]!.ToString()!,
+               r => r,
+               StringComparer.OrdinalIgnoreCase);
+
+       string? primaryCategoryName = null;
+       if (license.TryGetValue("license_category_name", out var primaryCat) && primaryCat is not null)
+           primaryCategoryName = primaryCat.ToString();
+
+       if (string.IsNullOrWhiteSpace(primaryCategoryName) && profile.Count > 0)
+       {
+           primaryCategoryName = profile.Values
+               .FirstOrDefault(v => TryGetInt(v, "item_hierarchy_id") == 1)
+               ?.GetValueOrDefault("license_category_name")?.ToString();
+       }
+
+       var upgradeCategories = new Dictionary<string, Dictionary<string, object?>>(StringComparer.OrdinalIgnoreCase);
+       if (!string.IsNullOrWhiteSpace(primaryCategoryName))
+       {
+           foreach (var hierarchyId in new[] { 1, 2 })
+           {
+               var categoryParam = new SqlParameter("@license_category_name", primaryCategoryName);
+               var localeParam = new SqlParameter("@locale", normalizedLocale);
+               var hierarchyParam = new SqlParameter("@item_hierarchy_id", hierarchyId);
+
+               var upgradeRows = await ExecToDictionaryAsync(
+                   "usp_product_select_license_category_upgrade",
+                   new DbParameter[] { categoryParam, localeParam, hierarchyParam },
+                   ct);
+
+               foreach (var row in upgradeRows)
+               {
+                   if (!row.TryGetValue("upgrade_license_category_name", out var upgradeNameObj) || upgradeNameObj is null)
+                       continue;
+
+                   var upgradeName = upgradeNameObj.ToString();
+                   if (string.IsNullOrWhiteSpace(upgradeName))
+                       continue;
+
+                   upgradeCategories[upgradeName] = row;
+               }
+           }
+       }
+
+       var billingLocaleParam = new SqlParameter("@locale", normalizedLocale);
+       var billingLicenseParam = new SqlParameter("@license_id", licenseId.Value);
+       var billingRows = await ExecToDictionaryAsync(
+           "usp_cart_select_license_billing_model",
+           new[] { billingLocaleParam, billingLicenseParam },
+           ct);
+
+       var billingModelMap = new Dictionary<string, Dictionary<string, object?>>();
+       foreach (var row in billingRows)
+       {
+           if (!row.TryGetValue("license_attribute_license_value", out var valueObj) || valueObj is null)
+               continue;
+
+           var key = Convert.ToString(valueObj, System.Globalization.CultureInfo.InvariantCulture);
+           if (string.IsNullOrWhiteSpace(key))
+               continue;
+
+           billingModelMap[key] = row;
+       }
+
+       var siteId = ExtractSiteId(license) ?? ExtractSiteId(profile.Values.FirstOrDefault());
+
+       return new LicenseOptionsResponse
+       {
+           License = license,
+           LicenseVerified = verified,
+           LicenseProfile = profile,
+           LicenseSiteId = siteId,
+           UpgradeCategories = upgradeCategories,
+           BillingModels = billingModelMap
+       };
+   }
+
+   private static object? ExtractSiteId(Dictionary<string, object?>? row)
+   {
+       if (row is null || row.Count == 0)
+           return null;
+
+       if (row.TryGetValue("license_site_id", out var siteId))
+           return siteId;
+
+       if (row.TryGetValue("site_id", out var altSiteId))
+           return altSiteId;
+
+       return null;
+   }
+
+   private static Dictionary<string, object?>? ParseJsonObject(string? json)
+   {
+       if (string.IsNullOrWhiteSpace(json))
+           return null;
+
+       try
+       {
+           using var doc = JsonDocument.Parse(json);
+           var dict = new Dictionary<string, object?>();
+           foreach (var prop in doc.RootElement.EnumerateObject())
+           {
+               dict[prop.Name] = prop.Value.GetRawText();
+           }
+           return dict;
+       }
+       catch
+       {
+           return null;
+       }
+   }
+
+   private static int? TryGetInt(Dictionary<string, object?> row, string key)
+   {
+       if (!row.TryGetValue(key, out var value) || value is null)
+           return null;
+
+       if (value is int intValue)
+           return intValue;
+
+       if (int.TryParse(value.ToString(), out var parsed))
+           return parsed;
+
+       return null;
+   }
 
     public async Task<string?> ResolveKeycodeFromMessageKeyAsync(
         string messageKey,
