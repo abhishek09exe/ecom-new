@@ -5,3 +5,4 @@
 .vs
 # Local dev settings with credentials
 ecom-new-api/appsettings.Development.json
+ecom-new-api/appsettings.json/appsettings.Development.json
