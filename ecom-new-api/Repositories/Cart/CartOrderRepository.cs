@@ -1057,8 +1057,8 @@ public sealed class CartOrderRepository : ICartOrderRepository
         var isExpired = false;
         if (effectiveEndDate.HasValue)
         {
-            var deltaDays = (effectiveEndDate.Value.Date - DateTime.UtcNow.Date).Days;
-            daysRemaining = Math.Max(0, deltaDays);
+            var deltaDays = (effectiveEndDate.Value - DateTime.UtcNow).Days;
+            daysRemaining = deltaDays;
             isExpired = deltaDays < 0;
         }
 
@@ -1186,8 +1186,8 @@ public sealed class CartOrderRepository : ICartOrderRepository
             ParentKeycode = legacyLicenseRow?.ParentKeycode ?? fallbackParentKeycode,
             LicenseKey = license.LicenseKeyGuid?.ToString("D"),
             LicenseCategoryDescription = primaryCategory?.LicenseCategoryDescription,
-            StartDate = effectiveStartDate,
-            EndDate = effectiveEndDate,
+            StartDate = legacyLicenseRow?.StartDate ?? effectiveStartDate,
+            EndDate = legacyLicenseRow?.EndDate ?? effectiveEndDate,
             DaysRemaining = daysRemaining,
             IsExpired = isExpired,
             LicenseCategoryName = primaryCategory?.LicenseCategoryName,

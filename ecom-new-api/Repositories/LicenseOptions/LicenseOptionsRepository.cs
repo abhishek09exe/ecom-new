@@ -174,32 +174,149 @@ public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
            billingModelMap[key] = row;
        }
 
+       var mappedLicense = MapLicense(license);
+       var mappedProfile = profile.ToDictionary(
+           kvp => kvp.Key,
+           kvp => MapLicenseProfileEntry(kvp.Value),
+           StringComparer.OrdinalIgnoreCase);
+       var mappedUpgradeCategories = upgradeCategories.ToDictionary(
+           kvp => kvp.Key,
+           kvp => MapUpgradeCategory(kvp.Value),
+           StringComparer.OrdinalIgnoreCase);
+       var mappedBillingModels = billingModelMap.Values
+           .Select(MapBillingModel)
+           .ToList();
+
        var siteId = ExtractSiteId(license) ?? ExtractSiteId(profile.Values.FirstOrDefault());
+       mappedProfile.TryGetValue(primaryCategoryName ?? string.Empty, out var primaryProfile);
 
        return new LicenseOptionsResponse
        {
-           License = license,
+           Keycode = mappedLicense.Keycode ?? messageKey,
+           LicenseKey = mappedLicense.LicenseKey,
+           LicenseStatus = TryGetString(license, "license_status_description") ?? TryGetString(license, "license_status"),
+           ProductLine = mappedLicense.ProductLineDescription,
+           LicenseCategory = primaryCategoryName,
+           LicenseCategoryDescription = mappedLicense.LicenseCategoryDescription ?? primaryProfile?.LicenseCategoryDescription,
+           LicenseSeats = mappedLicense.LicenseSeats,
+           ExpirationDate = mappedLicense.LicenseExpirationDate ?? mappedLicense.EndDate,
+           License = mappedLicense,
            LicenseVerified = verified,
-           LicenseProfile = profile,
+           LicenseProfile = mappedProfile,
            LicenseSiteId = siteId,
-           UpgradeCategories = upgradeCategories,
-           BillingModels = billingModelMap
+           UpgradeCategories = mappedUpgradeCategories,
+           BillingModels = mappedBillingModels
        };
    }
 
-   private static object? ExtractSiteId(Dictionary<string, object?>? row)
+   private static string? ExtractSiteId(Dictionary<string, object?>? row)
    {
        if (row is null || row.Count == 0)
            return null;
 
        if (row.TryGetValue("license_site_id", out var siteId))
-           return siteId;
+           return siteId?.ToString();
 
        if (row.TryGetValue("site_id", out var altSiteId))
-           return altSiteId;
+           return altSiteId?.ToString();
 
        return null;
    }
+
+   private static LicenseInfoResponse MapLicense(Dictionary<string, object?> row)
+       => new()
+       {
+           Keycode = TryGetString(row, "keycode"),
+           ProductLineDescription = TryGetString(row, "product_line_description"),
+           LicenseStatusId = TryGetInt(row, "license_status_id"),
+           LicenseTypeDescription = TryGetString(row, "license_type_description"),
+           LicenseKeycodeTypeId = TryGetInt(row, "license_keycode_type_id"),
+           MaxDailyActivations = TryGetInt(row, "max_daily_activations"),
+           LicenseExpirationDate = TryGetDateTime(row, "license_expiration_date"),
+           ParentKeycode = TryGetString(row, "parent_keycode"),
+           LicenseKey = TryGetString(row, "license_key"),
+           LicenseSeats = TryGetInt(row, "license_seats"),
+           ConsumedSeats = TryGetInt(row, "consumed_seats"),
+           SeatsUsed = TryGetInt(row, "seats_used"),
+           StorageGb = TryGetInt(row, "storage_gb"),
+           LicenseCategoryName = TryGetString(row, "license_category_name"),
+           LicenseCategoryDescription = TryGetString(row, "license_category_description"),
+           StartDate = TryGetDateTime(row, "start_date"),
+           EndDate = TryGetDateTime(row, "end_date"),
+           DaysRemaining = TryGetInt(row, "days_remaining"),
+           IsExpired = TryGetBool(row, "is_expired"),
+           LicenseAttributeDescription = TryGetString(row, "license_attribute_description"),
+           LicenseAttributeTag = TryGetString(row, "license_attribute_tag"),
+           LicenseAttributeLicenseValue = TryGetInt(row, "license_attribute_license_value"),
+           LicenseAttributeLicenseValueDescription = TryGetString(row, "license_attribute_license_value_description"),
+           LicenseAttributeLastModified = TryGetDateTime(row, "license_attribute_last_modified"),
+           OemType = TryGetString(row, "oem_type"),
+           PortalFlag = TryGetInt(row, "portal_flag"),
+           RenewalCount = TryGetInt(row, "renewal_count"),
+           LicenseOriginChannelName = TryGetString(row, "license_origin_channel_name"),
+           LicenseOriginalActivationDate = TryGetDateTime(row, "license_original_activation_date"),
+           EmailOptIn = TryGetInt(row, "email_opt_in"),
+           LicenseDistributionMethodCode = TryGetString(row, "license_distribution_method_code"),
+           NextBillDate = TryGetDateTime(row, "next_bill_date"),
+           CapabilityTypeDescription = TryGetString(row, "capability_type_description"),
+       };
+
+   private static LicenseProfileEntryResponse MapLicenseProfileEntry(Dictionary<string, object?> row)
+       => new()
+       {
+           LicenseCategoryName = TryGetString(row, "license_category_name"),
+           LicenseCategoryDescription = TryGetString(row, "license_category_description"),
+           LicenseCategoryId = TryGetInt(row, "license_category_id"),
+           LicenseKeycodeTypeId = TryGetInt(row, "license_keycode_type_id"),
+           CategoryTypeName = TryGetString(row, "category_type_name"),
+           LicenseStatusId = TryGetInt(row, "license_status_id"),
+           LicenseStatusDescription = TryGetString(row, "license_status_description"),
+           StartDate = TryGetDateTime(row, "start_date"),
+           ExpirationDate = TryGetDateTime(row, "expiration_date"),
+           LicenseSeats = TryGetInt(row, "license_seats"),
+           StorageGb = TryGetInt(row, "storage_gb"),
+           LicenseAttributeId = TryGetInt(row, "license_attribute_id"),
+           LicenseAttributeDescription = TryGetString(row, "license_attribute_description"),
+           LicenseAttributeLicenseValue = TryGetInt(row, "license_attribute_license_value"),
+           LicenseAttributeLicenseValueDescription = TryGetString(row, "license_attribute_license_value_description"),
+           ItemHierarchyId = TryGetInt(row, "item_hierarchy_id"),
+           ItemHierarchyName = TryGetString(row, "item_hierarchy_name"),
+           AutorenewalCycleName = TryGetString(row, "autorenewal_cycle_name"),
+           AutorenewalCycle = TryGetDecimal(row, "autorenewal_cycle"),
+           UsagePricingModelId = TryGetInt(row, "usage_pricing_model_id"),
+           UsagePricingModelName = TryGetString(row, "usage_pricing_model_name"),
+           RetentionModelId = TryGetInt(row, "retention_model_id"),
+           RetentionModelName = TryGetString(row, "retention_model_name"),
+           RetentionTerm = TryGetInt(row, "retention_term"),
+           RetentionModelTypeId = TryGetInt(row, "retention_model_type_id"),
+           ProductPlatformId = TryGetInt(row, "product_platform_id"),
+           ProductPlatformName = TryGetString(row, "product_platform_name"),
+           LicenseAutorenewalValue = TryGetInt(row, "license_autorenewal_value"),
+           ProductPricingLevelId = TryGetInt(row, "product_pricing_level_id"),
+           PricingLevel = TryGetString(row, "pricing_level"),
+           PricingLevelDescription = TryGetString(row, "pricing_level_description"),
+           LicenseVaultJson = TryGetString(row, "license_vault_json"),
+           MostRecentOrderTerm = TryGetDouble(row, "most_recent_order_term"),
+       };
+
+   private static UpgradeCategoryResponse MapUpgradeCategory(Dictionary<string, object?> row)
+       => new()
+       {
+           LicenseCategoryName = TryGetString(row, "license_category_name"),
+           UpgradeLicenseCategoryName = TryGetString(row, "upgrade_license_category_name"),
+           ItemHierarchyId = TryGetInt(row, "item_hierarchy_id"),
+           ItemHierarchyName = TryGetString(row, "item_hierarchy_name"),
+       };
+
+   private static BillingModelResponse MapBillingModel(Dictionary<string, object?> row)
+       => new()
+       {
+           ProductTypeId = TryGetInt(row, "product_type_id"),
+           ProductTypeDescription = TryGetString(row, "product_type_description"),
+           LicenseAttributeDescription = TryGetString(row, "license_attribute_description"),
+           LicenseAttributeLicenseValue = TryGetInt(row, "license_attribute_license_value"),
+           LicenseAttributeLicenseValueDescription = TryGetString(row, "license_attribute_license_value_description"),
+       };
 
    private static Dictionary<string, object?>? ParseJsonObject(string? json)
    {
@@ -231,6 +348,73 @@ public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
            return intValue;
 
        if (int.TryParse(value.ToString(), out var parsed))
+           return parsed;
+
+       return null;
+   }
+
+   private static string? TryGetString(Dictionary<string, object?> row, string key)
+   {
+       if (!row.TryGetValue(key, out var value) || value is null)
+           return null;
+
+       return value.ToString();
+   }
+
+   private static bool TryGetBool(Dictionary<string, object?> row, string key)
+   {
+       if (!row.TryGetValue(key, out var value) || value is null)
+           return false;
+
+       if (value is bool boolValue)
+           return boolValue;
+
+       if (bool.TryParse(value.ToString(), out var parsedBool))
+           return parsedBool;
+
+       if (int.TryParse(value.ToString(), out var parsedInt))
+           return parsedInt != 0;
+
+       return false;
+   }
+
+   private static DateTime? TryGetDateTime(Dictionary<string, object?> row, string key)
+   {
+       if (!row.TryGetValue(key, out var value) || value is null)
+           return null;
+
+       if (value is DateTime dateTimeValue)
+           return dateTimeValue;
+
+       if (DateTime.TryParse(value.ToString(), out var parsed))
+           return parsed;
+
+       return null;
+   }
+
+   private static decimal? TryGetDecimal(Dictionary<string, object?> row, string key)
+   {
+       if (!row.TryGetValue(key, out var value) || value is null)
+           return null;
+
+       if (value is decimal decimalValue)
+           return decimalValue;
+
+       if (decimal.TryParse(value.ToString(), out var parsed))
+           return parsed;
+
+       return null;
+   }
+
+   private static double? TryGetDouble(Dictionary<string, object?> row, string key)
+   {
+       if (!row.TryGetValue(key, out var value) || value is null)
+           return null;
+
+       if (value is double doubleValue)
+           return doubleValue;
+
+       if (double.TryParse(value.ToString(), out var parsed))
            return parsed;
 
        return null;

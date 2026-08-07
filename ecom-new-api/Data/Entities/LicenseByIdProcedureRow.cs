@@ -6,6 +6,12 @@ namespace ecom_new_api.Data.Entities;
 [Keyless]
 public sealed class LicenseByIdProcedureRow
 {
+    [Column("start_date")]
+    public DateTime? StartDate { get; set; }
+
+    [Column("end_date")]
+    public DateTime? EndDate { get; set; }
+
     [Column("license_type_description")]
     public string? LicenseTypeDescription { get; set; }
 
