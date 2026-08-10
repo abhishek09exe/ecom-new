@@ -217,68 +217,96 @@ public class MessageKeyService
 
     private async Task<bool> VerifyDiscountAsync(int cartDiscountId, BundlePricingItem bundle)
     {
-        var p = new SqlParameter("@cart_discount_id", SqlDbType.Int) { Value = cartDiscountId };
-        var items = await _ctx.Database
-            .SqlQueryRaw<CartDiscountItemResult>(
-                "EXEC usp_cart_select_cart_discount_item @cart_discount_id",
-                p)
-            .ToListAsync();
+        try
+        {
+            var p = new SqlParameter("@cart_discount_id", SqlDbType.Int) { Value = cartDiscountId };
+            var items = await _ctx.Database
+                .SqlQueryRaw<CartDiscountItemResult>(
+                    "EXEC usp_cart_select_cart_discount_item @cart_discount_id",
+                    p)
+                .ToListAsync();
 
-        return items.Any(i =>
-            (i.LicenseCategoryName == null || i.LicenseCategoryName == bundle.LicenseCategoryName) &&
-            (i.LicenseSeats        == null || i.LicenseSeats        == bundle.LicenseSeats) &&
-            (i.Years               == null || Math.Abs((i.Years.Value - (double)bundle.Years)) < 0.001));
+            return items.Any(i =>
+                (i.LicenseCategoryName == null || i.LicenseCategoryName == bundle.LicenseCategoryName) &&
+                (i.LicenseSeats        == null || i.LicenseSeats        == bundle.LicenseSeats) &&
+                (i.Years               == null || Math.Abs((i.Years.Value - (double)bundle.Years)) < 0.001));
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            return false;
+        }
     }
 
     private async Task<CampaignDiscountResult?> GetDiscountByCampaignAsync(
         string messageKey, BundlePricingItem? bundle)
     {
-        var p1 = new SqlParameter("@message_campaign_key",    SqlDbType.UniqueIdentifier) { Value = Guid.Parse(messageKey) };
-        var p2 = new SqlParameter("@license_category_name",   SqlDbType.VarChar, 10)      { Value = (object?)bundle?.LicenseCategoryName ?? DBNull.Value };
-        var p3 = new SqlParameter("@license_seats",           SqlDbType.Int)               { Value = (object?)bundle?.LicenseSeats         ?? DBNull.Value };
+        try
+        {
+            var p1 = new SqlParameter("@message_campaign_key",    SqlDbType.UniqueIdentifier) { Value = Guid.Parse(messageKey) };
+            var p2 = new SqlParameter("@license_category_name",   SqlDbType.VarChar, 10)      { Value = (object?)bundle?.LicenseCategoryName ?? DBNull.Value };
+            var p3 = new SqlParameter("@license_seats",           SqlDbType.Int)               { Value = (object?)bundle?.LicenseSeats         ?? DBNull.Value };
 
-        return (await _ctx.Database
-            .SqlQueryRaw<CampaignDiscountResult>(
-                "EXEC usp_message_select_message_campaign_cart_discount @message_campaign_key, @license_category_name, @license_seats",
-                p1, p2, p3)
-            .ToListAsync()).FirstOrDefault();
+            return (await _ctx.Database
+                .SqlQueryRaw<CampaignDiscountResult>(
+                    "EXEC usp_message_select_message_campaign_cart_discount @message_campaign_key, @license_category_name, @license_seats",
+                    p1, p2, p3)
+                .ToListAsync()).FirstOrDefault();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            return null;
+        }
     }
 
     private async Task<CartDiscountResult?> GetDiscountKeyAsync(int cartDiscountId, BundlePricingItem bundle)
     {
-        var p = new SqlParameter("@cart_discount_id", SqlDbType.Int) { Value = cartDiscountId };
-        return (await _ctx.Database
-            .SqlQueryRaw<CartDiscountResult>(
-                "EXEC usp_cart_select_cart_discount @cart_discount_id",
-                p)
-            .ToListAsync()).FirstOrDefault();
+        try
+        {
+            var p = new SqlParameter("@cart_discount_id", SqlDbType.Int) { Value = cartDiscountId };
+            return (await _ctx.Database
+                .SqlQueryRaw<CartDiscountResult>(
+                    "EXEC usp_cart_select_cart_discount @cart_discount_id",
+                    p)
+                .ToListAsync()).FirstOrDefault();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            return null;
+        }
     }
 
     private async Task<CampaignDiscountResult?> GetSiteDiscountAsync(
         BundlePricingItem bundle, string lang, string iso3)
     {
-        var p1 = new SqlParameter("@license_category_name",   SqlDbType.VarChar, 10) { Value = bundle.LicenseCategoryName };
-        var p2 = new SqlParameter("@license_seats",           SqlDbType.Int)          { Value = bundle.LicenseSeats };
-        var p3 = new SqlParameter("@years",                   SqlDbType.Float)        { Value = (double)bundle.Years };
-        var p4 = new SqlParameter("@language_code",           SqlDbType.VarChar, 2)   { Value = lang };
-        var p5 = new SqlParameter("@location_code",           SqlDbType.VarChar, 3)   { Value = iso3 };
-        var p6 = new SqlParameter("@cart_discount_method_id", SqlDbType.TinyInt)      { Value = DBNull.Value };
-        var p7 = new SqlParameter("@discount",                SqlDbType.Float)        { Value = DBNull.Value };
-
-        var row = (await _ctx.Database
-            .SqlQueryRaw<SiteDiscountResult>(
-                "EXEC usp_cart_select_new_product_discount @license_category_name, @license_seats, NULL, @years, @cart_discount_method_id, @discount, @language_code, @location_code",
-                p1, p2, p3, p4, p5, p6, p7)
-            .ToListAsync()).FirstOrDefault();
-
-        if (row == null) return null;
-        return new CampaignDiscountResult
+        try
         {
-            CartDiscountId          = row.CartDiscountId,
-            CartDiscountKey         = null,
-            CartDiscountDescription = null,
-            LicenseCategoryName     = null
-        };
+            var p1 = new SqlParameter("@license_category_name",   SqlDbType.VarChar, 10) { Value = bundle.LicenseCategoryName };
+            var p2 = new SqlParameter("@license_seats",           SqlDbType.Int)          { Value = bundle.LicenseSeats };
+            var p3 = new SqlParameter("@years",                   SqlDbType.Float)        { Value = (double)bundle.Years };
+            var p4 = new SqlParameter("@language_code",           SqlDbType.VarChar, 2)   { Value = lang };
+            var p5 = new SqlParameter("@location_code",           SqlDbType.VarChar, 3)   { Value = iso3 };
+            var p6 = new SqlParameter("@cart_discount_method_id", SqlDbType.TinyInt)      { Value = DBNull.Value };
+            var p7 = new SqlParameter("@discount",                SqlDbType.Float)        { Value = DBNull.Value };
+
+            var row = (await _ctx.Database
+                .SqlQueryRaw<SiteDiscountResult>(
+                    "EXEC usp_cart_select_new_product_discount @license_category_name, @license_seats, NULL, @years, @cart_discount_method_id, @discount, @language_code, @location_code",
+                    p1, p2, p3, p4, p5, p6, p7)
+                .ToListAsync()).FirstOrDefault();
+
+            if (row == null) return null;
+            return new CampaignDiscountResult
+            {
+                CartDiscountId          = row.CartDiscountId,
+                CartDiscountKey         = null,
+                CartDiscountDescription = null,
+                LicenseCategoryName     = null
+            };
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            return null;
+        }
     }
 
     // ── Utilities ────────────────────────────────────────────────────────────────

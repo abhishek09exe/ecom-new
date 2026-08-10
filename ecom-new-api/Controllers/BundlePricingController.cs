@@ -38,7 +38,19 @@ public sealed class BundlePricingController : ControllerBase
 
         try
         {
+            _logger.LogInformation("BundlePricing request: locale={Locale}, items={ItemCount}, first item modules={ModuleCount}",
+                request.Locale,
+                request.Items.Count,
+                request.Items.FirstOrDefault()?.Modules.Count ?? 0);
+
+            foreach (var item in request.Items)
+                _logger.LogInformation("  Item: {Cat} seats={Seats} years={Years} msgKey={Key} modules=[{Mods}]",
+                    item.LicenseCategoryName, item.LicenseSeats, item.Years, item.MessageKey,
+                    string.Join(", ", item.Modules.Select(m => m.LicenseCategoryName)));
+
             var result = await _pricing.GetBundlePricingAsync(request);
+
+            _logger.LogInformation("BundlePricing result: {Count} items returned", result.Items.Count);
 
             if (!result.Items.Any())
                 return UnprocessableEntity(new { error = "No pricing found for these items." });
@@ -49,7 +61,7 @@ public sealed class BundlePricingController : ControllerBase
         {
             _logger.LogError(ex, "Error retrieving bundle pricing for locale={Locale}", request.Locale);
             return StatusCode(StatusCodes.Status500InternalServerError,
-                new { error = "An error occurred while retrieving pricing." });
+                new { error = ex.Message, type = ex.GetType().Name, detail = ex.InnerException?.Message });
         }
     }
 }

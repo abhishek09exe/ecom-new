@@ -28,22 +28,66 @@ public class PricingService : IPricingService
             CurrencySymbol = currencySymbol
         };
 
-        var allItems     = new List<PricingLineItem>();
-        PricingTotals?   bundleTotals = null;
+        var allItems      = new List<PricingLineItem>();
+        PricingTotals?    bundleTotals  = null;
         var productTotals = new Dictionary<string, PricingTotals>();
 
         foreach (var bundle in request.Items)
         {
             var resolved = await _msgKey.ResolveAsync(bundle, locale);
+            var lalv     = bundle.LicenseAttributeLicenseValue ?? 1;
+
+            // ── Primary item ─────────────────────────────────────────────────────
             var (itemJson, bundleJson) = BuildSpInput(resolved, locale, request.LicenseKeycodeTypeId);
             var rows = await _repo.GetConfiguratorPricingAsync(itemJson, bundleJson);
 
             foreach (var row in rows)
             {
                 if (string.IsNullOrEmpty(row.LicenseCategoryName)) continue;
-                var line = MapRow(row, resolved);
+                var line = MapRow(row, resolved, lalv);
                 ApplyTotals(line, locale, currencyCode, ref bundleTotals, productTotals);
                 allItems.Add(line);
+            }
+
+            // ── Modules — each priced as a separate primary SP call ───────────
+            // The SP's consumer path (usp_cart_select_renewal_product_set) only
+            // resolves products for item_hierarchy_id = 1. Sending modules as
+            // secondary items (hierarchy 2) leaves their product_id null and they
+            // are silently dropped from the final INNER JOIN in the SP's SELECT.
+            foreach (var module in bundle.Modules)
+            {
+                var moduleItem = new BundlePricingItem
+                {
+                    LicenseCategoryName          = module.LicenseCategoryName,
+                    LicenseSeats                 = module.LicenseSeats,
+                    Years                        = module.Years,
+                    MessageKey                   = null,   // modules don't carry the message key
+                    LicenseAttributeLicenseValue = lalv,
+                    LicenseKeycodeTypeId         = bundle.LicenseKeycodeTypeId,
+                    StorageGb                    = module.StorageGb,
+                    Modules                      = new List<BundleModule>()
+                };
+
+                // Re-use the same discount/keycode context resolved for the parent bundle
+                var moduleContext = new ResolvedBundleContext
+                {
+                    Bundle                  = moduleItem,
+                    Keycode                 = resolved.Keycode,
+                    CartDiscountId          = resolved.CartDiscountId,
+                    MessageCampaignName     = resolved.MessageCampaignName,
+                    IncludeMessageKeyInBundle = false
+                };
+
+                var (mItemJson, mBundleJson) = BuildSpInput(moduleContext, locale, request.LicenseKeycodeTypeId);
+                var mRows = await _repo.GetConfiguratorPricingAsync(mItemJson, mBundleJson);
+
+                foreach (var row in mRows)
+                {
+                    if (string.IsNullOrEmpty(row.LicenseCategoryName)) continue;
+                    var line = MapRow(row, moduleContext, lalv);
+                    ApplyTotals(line, locale, currencyCode, ref bundleTotals, productTotals);
+                    allItems.Add(line);
+                }
             }
         }
 
@@ -60,8 +104,9 @@ public class PricingService : IPricingService
     {
         var item   = r.Bundle;
         var typeId = item.LicenseKeycodeTypeId > 0 ? item.LicenseKeycodeTypeId : defaultTypeId;
+        var lalv   = item.LicenseAttributeLicenseValue ?? 1;
 
-        var spItems = new List<object> { MakeSpItem(item, locale, typeId, 1, 1) };
+        var spItems = new List<object> { MakeSpItem(item, locale, typeId, lalv, 1, 1) };
         foreach (var m in item.Modules)
             spItems.Add(new
             {
@@ -72,7 +117,7 @@ public class PricingService : IPricingService
                 years                           = m.Years,
                 license_keycode_type_id         = typeId,
                 locale,
-                license_attribute_license_value = item.LicenseAttributeLicenseValue,
+                license_attribute_license_value = lalv,
                 start_date                      = "",
                 expiration_date                 = "",
                 cart_item_bundle_id             = 1,
@@ -86,7 +131,7 @@ public class PricingService : IPricingService
         {
             ["locale"]                          = locale,
             ["keycode"]                         = r.Keycode,
-            ["license_attribute_license_value"] = item.LicenseAttributeLicenseValue,
+            ["license_attribute_license_value"] = lalv,
             ["license_keycode_type_id"]         = typeId,
             ["cart_discount_id"]                = r.CartDiscountId,
             ["message_campaign_name"]           = r.MessageCampaignName,
@@ -100,7 +145,7 @@ public class PricingService : IPricingService
     }
 
     private static object MakeSpItem(
-        BundlePricingItem i, string locale, int typeId, int bundleId, int hierarchyId)
+        BundlePricingItem i, string locale, int typeId, int lalv, int bundleId, int hierarchyId)
         => new
         {
             license_category_name           = i.LicenseCategoryName,
@@ -110,7 +155,7 @@ public class PricingService : IPricingService
             years                           = i.Years,
             license_keycode_type_id         = typeId,
             locale,
-            license_attribute_license_value = i.LicenseAttributeLicenseValue,
+            license_attribute_license_value = lalv,
             start_date                      = "",
             expiration_date                 = "",
             cart_item_bundle_id             = bundleId,
@@ -122,36 +167,36 @@ public class PricingService : IPricingService
 
     // ── Row mapper ───────────────────────────────────────────────────────────────
 
-    private static PricingLineItem MapRow(ConfiguratorPricingResult row, ResolvedBundleContext r)
+    private static PricingLineItem MapRow(ConfiguratorPricingResult row, ResolvedBundleContext r, int lalv)
         => new()
         {
-            LineItem                   = row.LineItem,
-            Quantity                   = row.Quantity,
-            ListPrice                  = row.ListPrice,
-            UnitPrice                  = row.UnitPrice,
-            UsagePrice                 = row.UsagePrice,
-            EquivalentYearPrice        = row.EquivalentYearPrice ?? row.ListPrice,
-            OrderItemOfferAmount       = row.OrderItemOfferAmount?.ToString(),
-            ProductDescription         = row.ProductDescription,
-            ProductTypeDescription     = row.ProductTypeDescription,
-            LicenseCategoryName        = row.LicenseCategoryName,
-            LicenseCategoryDescription = row.LicenseCategoryDescription ?? string.Empty,
-            ProductFamilyDescription   = row.ProductFamilyDescription,
-            StartDate                  = row.StartDate?.ToString("yyyy-MM-dd HH:mm:ss.fff"),
-            ExpirationDate             = row.ExpirationDate?.ToString("yyyy-MM-dd HH:mm:ss.fff"),
-            CartItemBundleId           = row.CartItemBundleId,
-            ItemHierarchyId            = row.ItemHierarchyId,
-            LicenseKeycodeTypeId       = row.LicenseKeycodeTypeId,
-            DependentCartOrderItemId   = row.DependentCartOrderItemId,
-            StorageGb                  = row.StorageGb,
-            UsagePricingModelId        = row.UsagePricingModelId,
-            RetentionModelId           = row.RetentionModelId,
-            RetentionTerm              = row.RetentionTerm,
-            RetentionModelName         = row.RetentionModelName,
-            ActualStorageQuantity      = row.ActualStorageQuantity?.ToString(),
-            MessageKey                 = r.Bundle.MessageKey,
-            LicenseAttributeLicenseValue = r.Bundle.LicenseAttributeLicenseValue,
-            CartDiscountId             = r.CartDiscountId,
+            LineItem                     = row.LineItem,
+            Quantity                     = row.Quantity,
+            ListPrice                    = row.ListPrice,
+            UnitPrice                    = row.UnitPrice,
+            UsagePrice                   = row.UsagePrice,
+            EquivalentYearPrice          = row.EquivalentYearPrice ?? row.ListPrice,
+            OrderItemOfferAmount         = row.OrderItemOfferAmount?.ToString(),
+            ProductDescription           = row.ProductDescription,
+            ProductTypeDescription       = row.ProductTypeDescription,
+            LicenseCategoryName          = row.LicenseCategoryName,
+            LicenseCategoryDescription   = row.LicenseCategoryDescription ?? string.Empty,
+            ProductFamilyDescription     = row.ProductFamilyDescription,
+            StartDate                    = row.StartDate?.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+            ExpirationDate               = row.ExpirationDate?.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+            CartItemBundleId             = row.CartItemBundleId,
+            ItemHierarchyId              = row.ItemHierarchyId,
+            LicenseKeycodeTypeId         = row.LicenseKeycodeTypeId,
+            DependentCartOrderItemId     = row.DependentCartOrderItemId,
+            StorageGb                    = row.StorageGb,
+            UsagePricingModelId          = row.UsagePricingModelId,
+            RetentionModelId             = row.RetentionModelId,
+            RetentionTerm                = row.RetentionTerm,
+            RetentionModelName           = row.RetentionModelName,
+            ActualStorageQuantity        = row.ActualStorageQuantity?.ToString(),
+            MessageKey                   = r.Bundle.MessageKey,
+            LicenseAttributeLicenseValue = lalv,
+            CartDiscountId               = r.CartDiscountId,
         };
 
     // ── Totals & formatting ──────────────────────────────────────────────────────

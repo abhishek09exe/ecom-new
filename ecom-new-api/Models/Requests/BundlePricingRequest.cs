@@ -28,7 +28,7 @@ public class BundlePricingItem
 
     public string? MessageKey { get; set; }
 
-    public int LicenseAttributeLicenseValue { get; set; } = 1;
+    public int? LicenseAttributeLicenseValue { get; set; }
 
     public int LicenseKeycodeTypeId { get; set; }
 
