@@ -174,7 +174,11 @@ public class PricingService : IPricingService
             Quantity                     = row.Quantity,
             ListPrice                    = row.ListPrice,
             UnitPrice                    = row.UnitPrice,
-            UsagePrice                   = row.UsagePrice,
+            UsagePrice                   = row.UsagePrice > 0
+                                             ? row.UsagePrice
+                                             : lalv == 12 && row.UnitPrice > 0
+                                                 ? Math.Round(row.UnitPrice / 12, 2)
+                                                 : row.UsagePrice,
             EquivalentYearPrice          = row.EquivalentYearPrice ?? row.ListPrice,
             OrderItemOfferAmount         = row.OrderItemOfferAmount?.ToString(),
             ProductDescription           = row.ProductDescription,

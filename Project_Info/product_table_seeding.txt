@@ -1,0 +1,206 @@
+================================================================================
+Bundle Pricing — QA Debugging & Data Seeding Summary
+Date: 2026-08-10
+================================================================================
+
+OVERVIEW
+--------
+End-to-end debugging session for the bundle pricing GET endpoint, covering
+initial 422 failures, QA data gaps, SS key validation, and full QA_AUTOGEN
+product seeding to achieve working prices for all 5 modules.
+
+
+--------------------------------------------------------------------------------
+PHASE 1 — WAV License Key -> 422 No Pricing Found
+--------------------------------------------------------------------------------
+
+Frontend tested with WAV license key: E151E1C7-F0A3-4D72-812B-47007A98C948
+Terminal logs confirmed the API received the request correctly but returned 0
+pricing rows -> 422.
+
+Root cause: WAV product line does not exist in the QA database at all.
+The license key resolves to an SS/SecureAnywhere keycode in QA.
+WAV is production-only data.
+
+Conclusion: 422 was a QA data gap, not a code bug.
+
+
+--------------------------------------------------------------------------------
+PHASE 2 — Switched to SS License Key -> Pricing Returned Successfully
+--------------------------------------------------------------------------------
+
+Switched frontend to SS license key: C52ED110-F0A3-4D72-812B-47007A98C948
+
+Terminal: BundlePricing result: 4 items returned
+  SS (primary)  29.99  OK
+  WSAC          69.99  OK
+  WSAI          69.99  OK
+  WSAV          99.99  OK
+  QA_AUTOGEN     0.00  FAIL - incomplete test product
+
+Endpoint proven end-to-end correct for the SS product line.
+
+
+--------------------------------------------------------------------------------
+PHASE 3 — QA_AUTOGEN 0.00 Root Cause Analysis
+--------------------------------------------------------------------------------
+
+QA_AUTOGEN (license_category_id=253, product_id=1515110108) was a stub product
+seeded with only a single row in the product table.
+
+The pricing SP calls usp_cart_select_renewal_product_set which requires a fully
+seeded product chain matching seats x years x product_type. Without it the SP
+returns no rows and the UI shows 0.00.
+
+Additional blockers found:
+- product_license_category_seat: all rows had site_display=0 (SP filters on 1)
+- product_license_category_years: all rows had site_display=0
+
+
+--------------------------------------------------------------------------------
+PHASE 4 — QA_AUTOGEN Full Data Seeding
+--------------------------------------------------------------------------------
+
+Inserts performed in this order to fully seed the product chain:
+
+  1. SET site_display=1 in product_license_category_seat for seats 1,3,5 (lc=253)
+  2. SET site_display=1 in product_license_category_years for years 1,2,3 (lc=253)
+  3. product — 18 rows (new+renewal x 1/3/5 seats x 1/2/3 years)
+       product_ids 1515110001-1515110503 (new), 1515120001-1515120503 (renewal)
+       product_family_id=100, uses_keycode=1, retail_price per combination
+  4. product_license_category — 18 rows -> license_category_id=253
+  5. product_pricing — 18 rows (EN/USA/currency_id=1)
+  6. product_seat — 18 rows with seats=1/3/5 per product
+  7. product_years — 18 rows with years=1/2/3 per product
+  8. product_line_product — 18 rows -> product_line_id=1 (SS)
+  9. product_capability — 18 rows, capability_activation_days=365/730/1095
+
+Validation: usp_cart_select_renewal_product_set returned:
+  product_id=1515110001  QA AUTOGEN 1 Device 1 Year Subscription  49.99  OK
+
+
+--------------------------------------------------------------------------------
+FINAL RESULT
+--------------------------------------------------------------------------------
+
+Bundle pricing endpoint returns 5 items for C52ED110-F0A3-4D72-812B-47007A98C948:
+
+  SS (primary)   29.99  OK
+  WSAC           69.99  OK
+  WSAI           69.99  OK
+  WSAV           99.99  OK
+  QA_AUTOGEN     49.99  OK  <- fully working after data seeding
+
+Bundle pricing GET endpoint fully validated end-to-end in QA.
+Code status: no changes required. All fixes were QA database data seeding.
+
+
+--------------------------------------------------------------------------------
+QA DATA GAPS (not code bugs)
+--------------------------------------------------------------------------------
+
+  - usp_cart_select_license_campaign missing in QA -> handled safely in code
+  - WAV product line absent from QA -> expected 422 for WAV keys
+  - QA_AUTOGEN had no keycodes or dr_product_price entry -> not needed for pricing
+    SP (reads retail_price from product table directly)
+
+--------------------------------------------------------------------------------
+PHASE 5 — New Product Onboarding: Required DB Inserts (Checklist)
+--------------------------------------------------------------------------------
+
+Based on the full QA_AUTOGEN investigation, onboarding a completely new product
+(or product category) into the configure/bundle pricing flow requires inserts
+in the following tables, in this order:
+
+STEP 1 — product_line (if new product line)
+  - Only needed if the product belongs to a brand new product line (e.g. WAV)
+  - Columns: product_line_description, product_line_prefix, root_product_id
+
+STEP 2 — license_category
+  - One row per category name (e.g. WSAC, QA_AUTOGEN)
+  - Columns: license_category_name, license_category_description,
+             base_capability_id, devices_per_seat, status, license_category_brand
+
+STEP 3 — product (one row per seats x years x product_type combination)
+  - product_type_id: 1=New, 2=Renewal, 3=Upgrade
+  - Required columns: product_description, product_type_id, product_family_id,
+                      product_lifecycle_id, license_keycode_type_id,
+                      root_product_id, uses_keycode, retail_price, online_refund_flag
+  - Mirror values from an existing product in the same product line (e.g. WSAV)
+
+STEP 4 — product_license_category
+  - Links each product_id to its license_category_id
+  - One row per product inserted in STEP 3
+
+STEP 5 — product_pricing
+  - Price per locale (language_code + location_code + currency_id)
+  - Required for each product_id x language x location combination
+  - Columns: product_id, language_code, location_code, currency_id, retail_price
+
+STEP 6 — product_seat
+  - Links product_id to its seat count
+  - Columns: product_id, seats, insert_date, insert_by, modified_date,
+             modified_by, current_seats
+
+STEP 7 — product_years
+  - Links product_id to its year count
+  - Columns: product_id, years, upgrade_months, upgrade_days
+
+STEP 8 — product_line_product
+  - Links product_id to product_line_id
+  - One row per product_id
+
+STEP 9 — product_capability
+  - Required for SP pricing math (date range calculations)
+  - Columns: product_id, capability_id, capability_type_id,
+             capability_activation_days (365 x years), insert_date, insert_by
+
+STEP 10 — license_category_product_line
+  - Links license_category_id to product_line_id for a locale (EN/USA)
+  - Required for the pricing SP to find the category under the right product line
+  - Columns: license_category_id, product_line_id, cart_type_id,
+             language_code, location_code, payment_merchant_id, site_id
+
+STEP 11 — product_license_category_upgrade
+  - Defines which categories are upgradeable from the primary category
+  - Required for the /license-options endpoint to return the new category
+    in upgrade_categories (which drives what modules appear on the configure page)
+  - Columns: license_category_id (source), upgrade_license_category_id (new),
+             language_code, location_code, site_display, item_hierarchy_id
+
+STEP 12 — product_license_category_seat
+  - Controls which seat options are visible in the configure UI
+  - site_display=1 required for the SP to resolve the product
+  - Columns: license_category_id, seats, site_display, configuration_option
+
+STEP 13 — product_license_category_years
+  - Controls which year options are visible in the configure UI
+  - site_display=1 required for the SP to resolve the product
+  - Columns: license_category_id, years, years_description, site_display
+
+STEP 14 — product_license_category_keycode_type
+  - Links license_category_id to license_keycode_type_id
+  - Required for keycode type resolution in the pricing flow
+  - Columns: license_category_id, license_keycode_type_id, site_display
+
+OPTIONAL (for full purchase flow — not needed for configure page pricing only)
+  - keycodes: required for license key generation after purchase
+  - dr_product_price: required for Digital River checkout / payment processing
+  - dr_product: required for DR product catalog sync
+
+VALIDATION QUERY (run after all inserts)
+  EXEC usp_cart_select_renewal_product_set
+      @keycode = '<keycode>',
+      @license_category_name = '<new_category>',
+      @license_seats = 1, @storage_gb = NULL, @years = 1,
+      @cart_discount_id = NULL, @language_code = 'EN',
+      @location_code = 'USA', @cart_type_id = NULL,
+      @currency_id = 1, @product_type_id = 1,
+      @message_campaign_name = NULL;
+
+  Expected: returns a row with the correct product_description and retail_price.
+  If empty: a required table insert is missing. Work through STEPS 3-9 first.
+
+================================================================================
+END
+================================================================================
