@@ -1,3 +1,8 @@
 /ecom-new-api/obj
 /ecom-new-api/bin
+/ecom-new-api.Tests/obj
+/ecom-new-api.Tests/bin
 .vs
+# Local dev settings with credentials
+ecom-new-api/appsettings.Development.json
+ecom-new-api/appsettings.json/appsettings.Development.json

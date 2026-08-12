@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="ecom-new-api/ecom-new-api.csproj" />
+  <Project Path="ecom-new-api.Tests/ecom-new-api.Tests.csproj" />
 </Solution>
