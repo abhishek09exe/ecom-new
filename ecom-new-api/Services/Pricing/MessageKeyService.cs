@@ -94,8 +94,10 @@ public class ResolvedBundleContext
 public class MessageKeyService
 {
     private readonly AppDbContext _ctx;
+    private readonly ILogger<MessageKeyService> _logger;
 
-    public MessageKeyService(AppDbContext ctx) => _ctx = ctx;
+    public MessageKeyService(AppDbContext ctx, ILogger<MessageKeyService> logger)
+        => (_ctx, _logger) = (ctx, logger);
 
     public async Task<ResolvedBundleContext> ResolveAsync(BundlePricingItem bundle, string locale)
     {
@@ -208,9 +210,10 @@ public class MessageKeyService
                 .ToListAsync()).FirstOrDefault();
             return r?.MessageCampaignName;
         }
-        catch (Microsoft.Data.SqlClient.SqlException)
+        catch (Microsoft.Data.SqlClient.SqlException ex)
         {
             // SP not available in this environment — campaign name is optional metadata only
+            _logger.LogWarning(ex, "usp_cart_select_license_campaign unavailable for keycode={Keycode}; skipping campaign name", keycode);
             return null;
         }
     }
@@ -231,8 +234,9 @@ public class MessageKeyService
                 (i.LicenseSeats        == null || i.LicenseSeats        == bundle.LicenseSeats) &&
                 (i.Years               == null || Math.Abs((i.Years.Value - (double)bundle.Years)) < 0.001));
         }
-        catch (Microsoft.Data.SqlClient.SqlException)
+        catch (Microsoft.Data.SqlClient.SqlException ex)
         {
+            _logger.LogWarning(ex, "usp_cart_select_cart_discount_item failed for cart_discount_id={CartDiscountId}", cartDiscountId);
             return false;
         }
     }
@@ -252,8 +256,9 @@ public class MessageKeyService
                     p1, p2, p3)
                 .ToListAsync()).FirstOrDefault();
         }
-        catch (Microsoft.Data.SqlClient.SqlException)
+        catch (Microsoft.Data.SqlClient.SqlException ex)
         {
+            _logger.LogWarning(ex, "usp_message_select_message_campaign_cart_discount failed for message_key={MessageKey}", messageKey);
             return null;
         }
     }
@@ -269,8 +274,9 @@ public class MessageKeyService
                     p)
                 .ToListAsync()).FirstOrDefault();
         }
-        catch (Microsoft.Data.SqlClient.SqlException)
+        catch (Microsoft.Data.SqlClient.SqlException ex)
         {
+            _logger.LogWarning(ex, "usp_cart_select_cart_discount failed for cart_discount_id={CartDiscountId}", cartDiscountId);
             return null;
         }
     }
@@ -303,8 +309,9 @@ public class MessageKeyService
                 LicenseCategoryName     = null
             };
         }
-        catch (Microsoft.Data.SqlClient.SqlException)
+        catch (Microsoft.Data.SqlClient.SqlException ex)
         {
+            _logger.LogWarning(ex, "usp_cart_select_new_product_discount failed for category={Category} lang={Lang} loc={Iso3}", bundle.LicenseCategoryName, lang, iso3);
             return null;
         }
     }

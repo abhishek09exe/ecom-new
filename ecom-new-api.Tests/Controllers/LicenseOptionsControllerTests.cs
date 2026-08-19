@@ -3,6 +3,7 @@ using ecom_new_api.Models.Responses;
 using ecom_new_api.Services;
 using ecom_new_api.Services.LicenseOptions;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
@@ -13,7 +14,7 @@ public sealed class LicenseOptionsControllerTests
     private readonly Mock<ILicenseOptionsService> _serviceMock = new();
 
     private LicenseOptionsController CreateController()
-        => new(_serviceMock.Object);
+        => new(_serviceMock.Object, NullLogger<LicenseOptionsController>.Instance);
 
     private const string ValidGuid = "E151E1C7-018B-46EF-93A3-2CB7E01805C8";
 

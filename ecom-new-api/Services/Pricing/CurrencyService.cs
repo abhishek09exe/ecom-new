@@ -7,8 +7,10 @@ namespace ecom_new_api.Services;
 public class CurrencyService
 {
     private readonly AppDbContext _ctx;
+    private readonly ILogger<CurrencyService> _logger;
 
-    public CurrencyService(AppDbContext ctx) => _ctx = ctx;
+    public CurrencyService(AppDbContext ctx, ILogger<CurrencyService> logger)
+        => (_ctx, _logger) = (ctx, logger);
 
     public (string CurrencyCode, string CurrencySymbol) GetCurrency(string locale)
     {
@@ -22,12 +24,15 @@ public class CurrencyService
                 cll.LanguageCode.ToLower() == lang &&
                 cll.LocationCode.ToLower() == iso3.ToLower());
 
+        if (entry?.Currency is null)
+            _logger.LogWarning("No currency mapping for locale={Locale} (lang={Lang}, loc={Iso3}); defaulting to USD", locale, lang, iso3);
+
         var currencyCode = entry?.Currency?.CurrencyCode ?? "USD";
         var symbol = GetCurrencySymbol(locale, currencyCode);
         return (currencyCode, symbol);
     }
 
-    private static string GetCurrencySymbol(string locale, string currencyCode)
+    private string GetCurrencySymbol(string locale, string currencyCode)
     {
         try
         {
@@ -36,7 +41,11 @@ public class CurrencyService
             var region = new RegionInfo(currencyCode);
             return region.CurrencySymbol;
         }
-        catch { return "$"; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to resolve currency symbol for locale={Locale} currency={CurrencyCode}; defaulting to $", locale, currencyCode);
+            return "$";
+        }
     }
 
     private static string Iso2ToIso3(string iso2) => iso2 switch

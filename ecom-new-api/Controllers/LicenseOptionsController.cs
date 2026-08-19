@@ -9,8 +9,13 @@ namespace ecom_new_api.Controllers;
 public sealed class LicenseOptionsController : ControllerBase
 {
     private readonly ILicenseOptionsService _service;
+    private readonly ILogger<LicenseOptionsController> _logger;
 
-    public LicenseOptionsController(ILicenseOptionsService service) => _service = service;
+    public LicenseOptionsController(ILicenseOptionsService service, ILogger<LicenseOptionsController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
 
     [HttpGet("/license-options")]
     [ProducesResponseType(typeof(ApiResponse<LicenseOptionsResponse>), StatusCodes.Status200OK)]
@@ -26,6 +31,8 @@ public sealed class LicenseOptionsController : ControllerBase
 
         if (!Guid.TryParse(message_key, out _))
             return BadRequest(ApiResponse<LicenseOptionsResponse>.ValidationFailure(["message_key must be a valid GUID"]));
+
+        _logger.LogInformation("GetLicenseOptions request: message_key={MessageKey} locale={Locale}", message_key, locale);
 
         var result = await _service.GetLicenseOptionsByMessageKeyAsync(message_key, locale, ct);
 

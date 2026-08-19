@@ -13,14 +13,23 @@ public class PricingService : IPricingService
     private readonly IPricingRepository _repo;
     private readonly MessageKeyService _msgKey;
     private readonly CurrencyService   _currency;
+    private readonly ILogger<PricingService> _logger;
 
-    public PricingService(IPricingRepository repo, MessageKeyService msgKey, CurrencyService currency)
-        => (_repo, _msgKey, _currency) = (repo, msgKey, currency);
+    public PricingService(
+        IPricingRepository repo,
+        MessageKeyService msgKey,
+        CurrencyService currency,
+        ILogger<PricingService> logger)
+        => (_repo, _msgKey, _currency, _logger) = (repo, msgKey, currency, logger);
 
     public async Task<BundlePricingResponse> GetBundlePricingAsync(BundlePricingRequest request)
     {
         var locale = request.Locale ?? "en_US";
         var (currencyCode, currencySymbol) = _currency.GetCurrency(locale);
+
+        _logger.LogDebug(
+            "Pricing {BundleCount} bundle(s) for locale={Locale} resolved to currency={CurrencyCode}",
+            request.Items.Count, locale, currencyCode);
 
         var response = new BundlePricingResponse
         {
@@ -40,6 +49,11 @@ public class PricingService : IPricingService
             // ── Primary item ─────────────────────────────────────────────────────
             var (itemJson, bundleJson) = BuildSpInput(resolved, locale, request.LicenseKeycodeTypeId);
             var rows = await _repo.GetConfiguratorPricingAsync(itemJson, bundleJson);
+
+            if (rows.Count == 0)
+                _logger.LogWarning(
+                    "No pricing rows returned for bundle category={Category} seats={Seats} years={Years}",
+                    bundle.LicenseCategoryName, bundle.LicenseSeats, bundle.Years);
 
             foreach (var row in rows)
             {

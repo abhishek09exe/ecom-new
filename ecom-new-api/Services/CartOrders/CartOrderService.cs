@@ -73,31 +73,6 @@ public sealed class CartOrderService : ICartOrderService
 
     // ── GET endpoints ───────────────────────────────────────────────────────────
 
-    public async Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsAsync(
-        string keycode, string? locale = null, CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(keycode))
-            return ServiceResult<LicenseOptionsResponse>.Invalid(["keycode is required"]);
-
-        var result = await _repo.SelectLicenseOptionsAsync(keycode, locale, ct);
-        return result is null
-            ? ServiceResult<LicenseOptionsResponse>.NotFound($"No license found for keycode '{keycode}'")
-            : ServiceResult<LicenseOptionsResponse>.Ok(result);
-    }
-
-    public async Task<ServiceResult<LicenseOptionsResponse>> GetLicenseOptionsByMessageKeyAsync(
-        string messageKey, string? locale = null, CancellationToken ct = default)
-    {
-        var keycode = await _repo.ResolveKeycodeFromMessageKeyAsync(messageKey, ct);
-        if (keycode is null)
-            return ServiceResult<LicenseOptionsResponse>.NotFound($"No license found for message_key '{messageKey}'");
-
-        var result = await _repo.SelectLicenseOptionsAsync(keycode, locale, ct);
-        return result is null
-            ? ServiceResult<LicenseOptionsResponse>.NotFound($"No license found for message_key '{messageKey}'")
-            : ServiceResult<LicenseOptionsResponse>.Ok(result);
-    }
-
     public async Task<ServiceResult<ConfigureResponse>> GetConfigureAsync(
         string keycode, CancellationToken ct = default)
     {

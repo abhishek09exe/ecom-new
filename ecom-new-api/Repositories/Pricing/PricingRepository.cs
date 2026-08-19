@@ -9,8 +9,10 @@ namespace ecom_new_api.Repositories.Pricing;
 public sealed class PricingRepository : IPricingRepository
 {
     private readonly AppDbContext _ctx;
+    private readonly ILogger<PricingRepository> _logger;
 
-    public PricingRepository(AppDbContext ctx) => _ctx = ctx;
+    public PricingRepository(AppDbContext ctx, ILogger<PricingRepository> logger)
+        => (_ctx, _logger) = (ctx, logger);
 
     public async Task<List<ConfiguratorPricingResult>> GetConfiguratorPricingAsync(
         string itemJson, string bundleJson)
@@ -20,10 +22,15 @@ public sealed class PricingRepository : IPricingRepository
         var p2 = new SqlParameter("@bundle_json", SqlDbType.NVarChar, -1) { Value = bundleJson };
         var p3 = new SqlParameter("@opt_args", SqlDbType.VarChar, 100) { Value = DBNull.Value };
 
-        return await _ctx.Database
+        _logger.LogDebug("Executing usp_cart_select_license_configurator_pricing");
+
+        var results = await _ctx.Database
             .SqlQueryRaw<ConfiguratorPricingResult>(
                 "EXEC usp_cart_select_license_configurator_pricing @item_json, @bundle_json, @opt_args",
                 p1, p2, p3)
             .ToListAsync();
+
+        _logger.LogDebug("usp_cart_select_license_configurator_pricing returned {RowCount} row(s)", results.Count);
+        return results;
     }
 }

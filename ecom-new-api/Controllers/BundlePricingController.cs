@@ -61,7 +61,7 @@ public sealed class BundlePricingController : ControllerBase
         {
             _logger.LogError(ex, "Error retrieving bundle pricing for locale={Locale}", request.Locale);
             return StatusCode(StatusCodes.Status500InternalServerError,
-                new { error = ex.Message, type = ex.GetType().Name, detail = ex.InnerException?.Message });
+                new { error = "An unexpected error occurred while calculating pricing." });
         }
     }
 }
