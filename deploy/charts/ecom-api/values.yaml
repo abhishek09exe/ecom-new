@@ -1,0 +1,68 @@
+# Default values for ecom-api. Environment-specific overrides live in
+# deploy/envs/<env>/ecom-api-values.yaml
+
+replicaCount: 1
+
+image:
+  repository: ecom-new-api
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+  # Port name matters: Prometheus ServiceMonitor references it by name, not number.
+  name: http
+
+# Non-secret configuration. Rendered into a ConfigMap and consumed via envFrom.
+env:
+  ASPNETCORE_ENVIRONMENT: "Development"
+  ASPNETCORE_URLS: "http://+:8080"
+  CartRouteBaseUrl: ""
+
+# The DB connection string is NOT set here. It must already exist as a Secret
+# (created out-of-band, e.g. `kubectl create secret generic`) with the key
+# below. This chart only references it — it never creates or stores the value.
+db:
+  existingSecretName: ecom-db-credentials
+  secretKey: connectionString
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  readiness:
+    path: /readyz
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+serviceMonitor:
+  enabled: false
+  # Must match the label the Prometheus Operator's serviceMonitorSelector expects.
+  # Verify with: kubectl get prometheus -n monitoring -o jsonpath='{.items[0].spec.serviceMonitorSelector}'
+  releaseLabel: kube-prometheus-stack
+  interval: 15s
+  path: /metrics
+
+ingress:
+  enabled: false
+  className: ""
+  host: ecom-api.local
+  annotations: {}
+
+serviceAccount:
+  create: true
+  name: ""

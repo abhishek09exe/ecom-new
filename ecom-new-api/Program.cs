@@ -1,4 +1,5 @@
 using ecom_new_api.Data;
+using ecom_new_api.HealthChecks;
 using ecom_new_api.Helpers;
 using ecom_new_api.Repositories.Cart;
 using ecom_new_api.Repositories.LicenseOptions;
@@ -7,7 +8,9 @@ using ecom_new_api.Services;
 using ecom_new_api.Services.CartOrders;
 using ecom_new_api.Services.LicenseOptions;
 using ecom_new_api.Services.Pricing;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
+using Prometheus;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,10 +25,17 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 // ── EF Core DbContext ────────────────────────────────────────────────────────────
+var ecomDbConnectionString = builder.Configuration.GetConnectionString("EcomDb")
+    ?? throw new InvalidOperationException("ConnectionStrings__EcomDb is not configured.");
+
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(
-        builder.Configuration.GetConnectionString("EcomDb"),
+        ecomDbConnectionString,
         sql => sql.CommandTimeout(60)));
+
+builder.Services.AddHealthChecks()
+     .AddCheck<DbContextHealthCheck<AppDbContext>>("ecom_dbcontext_health_check", tags: new[] { "ready" });
+
 
 // ── Repositories ────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
@@ -58,8 +68,16 @@ if (app.Environment.IsDevelopment())
     app.UseDeveloperExceptionPage();
 }
 
-app.UseHttpsRedirection();
+if (!app.Environment.IsProduction())
+{
+    app.UseHttpsRedirection();
 
+}
+app.UseRouting();
+app.UseHttpMetrics(); // Collect HTTP request metrics
+app.MapMetrics(); // Expose metrics at /metrics endpoint
+app.MapHealthChecks("/healthz", new HealthCheckOptions { Predicate = _ => false });
+app.MapHealthChecks("/readyz", new HealthCheckOptions { Predicate = c => c.Tags.Contains("ready") });
 // TODO: REPLACE WITH ACTUAL — add middleware here in order:
 //   app.UseMiddleware<CartBootstrapMiddleware>();
 //   app.UseMiddleware<CsrfValidationMiddleware>();

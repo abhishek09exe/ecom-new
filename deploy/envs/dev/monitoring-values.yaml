@@ -1,0 +1,15 @@
+# Dev overrides for the monitoring chart (kube-prometheus-stack passthrough).
+kube-prometheus-stack:
+  prometheus:
+    prometheusSpec:
+      retention: 3d   # shorter retention is fine for a local dev cluster
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
+  grafana:
+    adminPassword: "admin"   # dev-only convenience; never do this for shared/prod clusters

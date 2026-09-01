@@ -1,0 +1,79 @@
+{{- if .Values.bacpacImport.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "mssql.fullname" . }}-bacpac-import
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mssql.labels" . | nindent 4 }}
+  annotations:
+    # Run after the StatefulSet is synced, and clean up automatically once it
+    # succeeds. Argo CD honours these same annotations as sync-wave/hook rules
+    # when this chart is deployed via an Argo Application.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": hook-succeeded
+    "argocd.argoproj.io/hook": PostSync
+    "argocd.argoproj.io/hook-delete-policy": HookSucceeded
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        {{- include "mssql.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bacpac-import
+          image: "{{ .Values.bacpacImport.image.repository }}:{{ .Values.bacpacImport.image.tag }}"
+          env:
+            - name: SA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecretName }}
+                  key: {{ .Values.auth.secretKey }}
+            - name: MSSQL_HOST
+              value: "{{ include "mssql.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local"
+            - name: TARGET_DB
+              value: {{ .Values.targetDatabase | quote }}
+            - name: BACPAC_PATH
+              value: {{ .Values.bacpacImport.bacpacPath | quote }}
+          volumeMounts:
+            - name: bacpac
+              mountPath: /bacpac
+              readOnly: true
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              echo "Installing sqlpackage and sqlcmd..."
+              # The base dotnet/sdk image ships neither tool by default.
+              dotnet tool install -g microsoft.sqlpackage --version 162.* > /dev/null
+              dotnet tool install -g microsoft.sqlcmd --version 1.* > /dev/null
+              export PATH="$PATH:/root/.dotnet/tools"
+
+              echo "Checking whether database '$TARGET_DB' already exists..."
+              EXISTS=$(sqlcmd -S "$MSSQL_HOST" -U sa -P "$SA_PASSWORD" -C -h -1 \
+                -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.databases WHERE name = '$TARGET_DB'" | tr -d '[:space:]')
+
+              if [ "$EXISTS" = "1" ]; then
+                echo "Database '$TARGET_DB' already exists, skipping import (idempotent)."
+                exit 0
+              fi
+
+              echo "Importing $BACPAC_PATH into $TARGET_DB..."
+              sqlpackage /a:Import \
+                /tsn:"$MSSQL_HOST" \
+                /tdn:"$TARGET_DB" \
+                /tu:sa \
+                /tp:"$SA_PASSWORD" \
+                /sf:"$BACPAC_PATH" \
+                /TargetTrustServerCertificate:True
+
+              echo "Import complete."
+      volumes:
+        - name: bacpac
+          persistentVolumeClaim:
+            claimName: {{ .Values.bacpacImport.existingClaimName }}
+{{- end }}

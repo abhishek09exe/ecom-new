@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-monitoring
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abhishek09exe/ecom-new
+    targetRevision: agents/k8s-deployment-sqlserver-prometheus-grafana
+    path: deploy/charts/monitoring
+    helm:
+      releaseName: monitoring
+      valueFiles:
+        - ../../envs/dev/monitoring-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

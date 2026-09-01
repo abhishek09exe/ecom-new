@@ -1,0 +1,15 @@
+# Dev overrides for the mssql chart.
+persistence:
+  size: 5Gi
+  storageClassName: hostpath   # Docker Desktop's default local StorageClass
+
+auth:
+  existingSecretName: ecom-mssql-sa
+  secretKey: SA_PASSWORD
+
+targetDatabase: ecommerce
+
+bacpacImport:
+  enabled: true
+  existingClaimName: ecom-mssql-bacpac
+  bacpacPath: /bacpac/ecom.bacpac

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ecom-dev
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring

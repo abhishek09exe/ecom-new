@@ -1,0 +1,53 @@
+# Default values for the mssql chart. Environment overrides in
+# deploy/envs/<env>/mssql-values.yaml
+
+image:
+  repository: mcr.microsoft.com/mssql/server
+  tag: "2022-latest"
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+# SA password must already exist as a Secret (created out-of-band, e.g.
+# `kubectl create secret generic ecom-mssql-sa --from-literal=SA_PASSWORD=...`).
+# This chart never creates or stores the password itself.
+auth:
+  existingSecretName: ecom-mssql-sa
+  secretKey: SA_PASSWORD
+
+service:
+  port: 1433
+
+persistence:
+  size: 5Gi
+  storageClassName: hostpath
+  accessModes:
+    - ReadWriteOnce
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 2Gi
+  limits:
+    cpu: "2"
+    memory: 3Gi
+
+# fsGroup 10001 is the mssql user inside the container image; without this the
+# process cannot take ownership of the mounted PVC and will crashloop.
+securityContext:
+  fsGroup: 10001
+
+targetDatabase: ecommerce
+
+bacpacImport:
+  enabled: true
+  # Bacpac file must already be staged on this PVC before the job runs
+  # (e.g. via `kubectl cp` into a helper pod). Never commit the bacpac to git.
+  existingClaimName: ecom-mssql-bacpac
+  bacpacPath: /bacpac/ecom.bacpac
+  image:
+    repository: mcr.microsoft.com/dotnet/sdk
+    tag: "10.0"
+  # Keep the job idempotent: it must exit 0 if the target DB already exists,
+  # otherwise every Argo sync re-triggers a full import.

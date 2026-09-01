@@ -1,0 +1,22 @@
+# Dev overrides for the ecom-api chart.
+replicaCount: 1
+
+image:
+  repository: ecom-new-api
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent   # image is built locally into Docker Desktop's daemon, no registry push needed
+
+env:
+  ASPNETCORE_ENVIRONMENT: "Development"
+  CartRouteBaseUrl: "https://www.webroot.com/us/en/cart"
+
+db:
+  existingSecretName: ecom-db-credentials
+  secretKey: connectionString
+
+serviceMonitor:
+  enabled: true
+  releaseLabel: monitoring   # must match the Argo/Helm release name used for the monitoring chart
+
+ingress:
+  enabled: false

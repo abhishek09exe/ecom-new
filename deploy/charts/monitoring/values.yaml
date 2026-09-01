@@ -1,0 +1,35 @@
+# Values passed through to the kube-prometheus-stack dependency.
+# Full upstream default values: https://github.com/prometheus-community/helm-charts/blob/main/charts/kube-prometheus-stack/values.yaml
+kube-prometheus-stack:
+  # This is the name Prometheus's serviceMonitorSelector matches on via the
+  # "release" label — our ecom-api chart's serviceMonitor.releaseLabel value
+  # must equal this Helm release name for auto-discovery to work.
+  prometheus:
+    prometheusSpec:
+      serviceMonitorSelectorNilUsesHelmValues: false
+      serviceMonitorNamespaceSelector: {}   # {} = watch ServiceMonitors in ALL namespaces
+      retention: 7d
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+
+  grafana:
+    adminPassword: "" # override in envs/<env>/monitoring-values.yaml or via a Secret reference
+    sidecar:
+      dashboards:
+        enabled: true
+        searchNamespace: ALL   # lets ecom-api ship its own dashboard ConfigMap in ecom-dev
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  alertmanager:
+    enabled: true

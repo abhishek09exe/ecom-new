@@ -1,0 +1,13 @@
+---
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: ecom-mssql-sa
+  namespace: data
+spec:
+  encryptedData:
+    SA_PASSWORD: AgAJlOPldWkENtJo4a59y6xmojDLaMJ0/cmoIr/zFvwNV3w4+mm3etR6FvcUGbhhndym2yHIjmzv+RIZmZFucfh6kz8SofncJDyimmGsDrKFr32raXrvvHG9VihBrxPQDOq7YeWgcj3uJJG/MQZDgVPWP7VanB8bw9ur2NaI1tw0iuDfQfDNn8+oCGpN+uGOHUbnNvB7QALfQDpxi4JJdH4t99Twwl3o9LmgTc7zPipM9DZTA/vwM3ZsW9TVlNyZKDpnUc5CWKultGYtOBm65GRpDF2lJxgZvHpAhC4V5mQ9QbmR8dD+t6uQ9aqoFg5mC0WkJoXLZkzt1i+lzqVeyDVyLH3QNKfgbDuHkt4cVl0Mc+dagm3ePKciheB6+Z4roxJmQ3jFPmuwAqrn26RbktZKoUEN4qSksAr+sPfLY+IaGzJGdm1w2YxPMDXVQbT4qR//JlVmtr3246bZnhwuMsunTnAibC7mCh7fuzYF3tlpGiuUWdg++UW7V3G7NemV3Gbm8+JkQBMEEEm1ZErbLz0ggKRrTGUnyu5tnk+76iunN43QRzwyLPz5WaXnvMaSBIx52905URHyT5L2b8IPAfKz96qp85GT9UFAoa4f04StWQlMrq7gfmMg4uXublmrUcm5LOSZgvfqIcgKRRf64db9n3Xu+6GWtNIf+ZAgsU9AyyJ+4+NdA85Ov3ipJ5IZ3aZ365SKvv+Xxw==
+  template:
+    metadata:
+      name: ecom-mssql-sa
+      namespace: data

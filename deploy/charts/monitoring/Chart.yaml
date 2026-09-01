@@ -1,0 +1,11 @@
+apiVersion: v2
+name: monitoring
+description: Thin wrapper chart around kube-prometheus-stack for the ecom-new platform
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+dependencies:
+  - name: kube-prometheus-stack
+    version: "65.x.x"
+    repository: "https://prometheus-community.github.io/helm-charts"

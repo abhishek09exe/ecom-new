@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ecom-mssql
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abhishek09exe/ecom-new
+    targetRevision: agents/k8s-deployment-sqlserver-prometheus-grafana
+    path: deploy/charts/mssql
+    helm:
+      releaseName: ecom-mssql
+      valueFiles:
+        - ../../envs/dev/mssql-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: data
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
