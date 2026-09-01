@@ -518,9 +518,11 @@ public sealed class CartOrderRepository : ICartOrderRepository
         string vendorOrderCode, CancellationToken ct = default)
     {
         // Resolve cart_order_id + cart locale from vendor_order_code
+        // ✅ OPTIMIZED: AsNoTracking for read-only query
         var orderInfo = await _db.CartOrder
             .Where(o => o.VendorOrderCode == vendorOrderCode)
             .Select(o => new { o.CartOrderId, o.Locale })
+            .AsNoTracking()
             .FirstOrDefaultAsync(ct);
 
         if (orderInfo is null) return [];
@@ -610,7 +612,7 @@ public sealed class CartOrderRepository : ICartOrderRepository
                 // cart_order_item_json (raw, will be parsed client-side)
                 ItemJsonRaw = ij != null ? ij.Json : null
             }
-        ).ToListAsync(ct);
+        ).AsNoTracking().ToListAsync(ct);
 
         // Resolve dependent item IDs (self-join for hierarchy 2 → hierarchy 1 parent)
         // Mirrors: LEFT JOIN (...subquery...) d ON d.cart_order_id = i.cart_order_id AND ...

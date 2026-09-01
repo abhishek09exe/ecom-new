@@ -21,11 +21,23 @@ builder.Services.AddControllers()
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// ── EF Core DbContext ────────────────────────────────────────────────────────────
+// ── Memory Cache for reference data ──────────────────────────────────────────────
+builder.Services.AddMemoryCache();
+
+// ── EF Core DbContext with performance optimizations ────────────────────────────
 builder.Services.AddDbContext<AppDbContext>(options =>
+{
     options.UseSqlServer(
         builder.Configuration.GetConnectionString("EcomDb"),
-        sql => sql.CommandTimeout(60)));
+        sql =>
+        {
+            sql.CommandTimeout(60);
+            // Split query avoids cartesian explosion on collection joins
+            sql.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);
+        });
+    // Keep default tracking behavior - use explicit AsNoTracking() on read-only queries
+    // (We can't use NoTracking as default because CartOrderRepository has write operations)
+});
 
 // ── Repositories ────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();

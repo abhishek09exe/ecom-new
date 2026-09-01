@@ -179,6 +179,7 @@ public class MessageKeyService
             .SqlQueryRaw<MessageKeyResult>(
                 "EXEC usp_cart_select_message_key @message_key, @license_category_name, @years, @seats",
                 p1, p2, p3, p4)
+            .AsNoTracking()
             .ToListAsync()).FirstOrDefault();
     }
 
@@ -190,6 +191,7 @@ public class MessageKeyService
             .SqlQueryRaw<MessageKeyResult>(
                 "EXEC usp_cart_select_message_key @message_key",
                 p)
+            .AsNoTracking()
             .ToListAsync()).FirstOrDefault();
 
         if (r?.MessageKeyJson == null) return null;
@@ -207,6 +209,7 @@ public class MessageKeyService
                 .SqlQueryRaw<LicenseCampaignResult>(
                     "EXEC usp_cart_select_license_campaign @keycode",
                     p)
+                .AsNoTracking()
                 .ToListAsync()).FirstOrDefault();
             return r?.MessageCampaignName;
         }
@@ -227,6 +230,7 @@ public class MessageKeyService
                 .SqlQueryRaw<CartDiscountItemResult>(
                     "EXEC usp_cart_select_cart_discount_item @cart_discount_id",
                     p)
+                .AsNoTracking()
                 .ToListAsync();
 
             return items.Any(i =>
