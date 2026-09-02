@@ -614,8 +614,7 @@ AS
 	from customer_email
 	where customer_email = @account_user_name and email_status_id = 1
 
-	select @c
-ustomer_count = count(*) from @customer_ids
+	select @customer_count = count(*) from @customer_ids
 
 --	select customer_count = @customer_count
 
@@ -212468,5 +212467,3 @@ BEGIN CATCH
 END CATCH;
 
 GO
-
-Completion time: 2026-07-31T12:16:35.3601385+05:30

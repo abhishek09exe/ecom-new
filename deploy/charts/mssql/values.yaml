@@ -40,14 +40,16 @@ securityContext:
 
 targetDatabase: ecommerce
 
-bacpacImport:
+# Seeds the database from the Project_Seed/*.sql scripts (schema, stored
+# procs, sample data) baked into a small custom image - see
+# deploy/charts/mssql/seed-image/. Replaces the earlier bacpac-import
+# approach: the scripts are small enough to live in git, so there's no
+# out-of-band PVC staging step required.
+seedImport:
   enabled: true
-  # Bacpac file must already be staged on this PVC before the job runs
-  # (e.g. via `kubectl cp` into a helper pod). Never commit the bacpac to git.
-  existingClaimName: ecom-mssql-bacpac
-  bacpacPath: /bacpac/ecom.bacpac
   image:
-    repository: mcr.microsoft.com/dotnet/sdk
-    tag: "10.0"
+    repository: ecom-mssql-seed
+    tag: "local"
+    pullPolicy: IfNotPresent
   # Keep the job idempotent: it must exit 0 if the target DB already exists,
-  # otherwise every Argo sync re-triggers a full import.
+  # otherwise every Argo sync re-triggers a full reseed.

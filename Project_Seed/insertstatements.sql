@@ -387,5 +387,3 @@ INSERT INTO [dbo].[usage_pricing_model] ([usage_pricing_model_id], [usage_pricin
 INSERT INTO [dbo].[usage_pricing_model] ([usage_pricing_model_id], [usage_pricing_model_name], [usage_pricing_model_description], [usage_pricing_storageGB], [insert_date], [insert_by]) VALUES (8, 'Original 1 GB', 'Original - Storage based', 1, '2022-09-14 14:10:12.887', 'OPENTEXT\nnaina.adm');
 INSERT INTO [dbo].[usage_pricing_model] ([usage_pricing_model_id], [usage_pricing_model_name], [usage_pricing_model_description], [usage_pricing_storageGB], [insert_date], [insert_by]) VALUES (9, 'Compressed 1 GB', 'Compressed - Storage based', 1, '2022-09-14 14:10:59.827', 'OPENTEXT\nnaina.adm');
 SET IDENTITY_INSERT [dbo].[usage_pricing_model] OFF;
-
-Completion time: 2026-07-28T13:10:34.8861713+05:30

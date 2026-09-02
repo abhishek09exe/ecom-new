@@ -1,0 +1,41 @@
+{{- if .Values.seedImport.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "mssql.fullname" . }}-seed-import
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mssql.labels" . | nindent 4 }}
+  annotations:
+    # Run after the StatefulSet is synced, and clean up automatically once it
+    # succeeds. Argo CD honours these same annotations as sync-wave/hook rules
+    # when this chart is deployed via an Argo Application.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": hook-succeeded
+    "argocd.argoproj.io/hook": PostSync
+    "argocd.argoproj.io/hook-delete-policy": HookSucceeded
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        {{- include "mssql.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed-import
+          image: "{{ .Values.seedImport.image.repository }}:{{ .Values.seedImport.image.tag }}"
+          imagePullPolicy: {{ .Values.seedImport.image.pullPolicy }}
+          env:
+            - name: SA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecretName }}
+                  key: {{ .Values.auth.secretKey }}
+            - name: MSSQL_HOST
+              value: "{{ include "mssql.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local"
+            - name: TARGET_DB
+              value: {{ .Values.targetDatabase | quote }}
+{{- end }}
+

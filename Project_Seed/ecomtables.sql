@@ -1,7 +1,7 @@
-﻿===============================================================================
-                    CREATE TABLE SCRIPTS - ALL TABLES
-===============================================================================
- 
+-- ===============================================================================
+-- CREATE TABLE SCRIPTS - ALL TABLES
+-- ===============================================================================
+
 CREATE TABLE [dbo].[account] (
     [account_id] int IDENTITY(1,1) NOT NULL,
     [account_user_name] varchar(100) NOT NULL,
@@ -16498,9 +16498,3 @@ CREATE TABLE [dbo].[zuora_product_pricing_history] (
 ,
     PRIMARY KEY ([zuora_product_pricing_history_id])
 );
- 
-===============================================================================
-CREATE TABLE scripts completed successfully
-===============================================================================
-
-Completion time: 2026-07-28T12:17:57.1225884+05:30
