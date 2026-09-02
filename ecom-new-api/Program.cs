@@ -1,12 +1,15 @@
 using ecom_new_api.Data;
 using ecom_new_api.Helpers;
 using ecom_new_api.Repositories.Cart;
+using ecom_new_api.Repositories.Forms;
 using ecom_new_api.Repositories.LicenseOptions;
 using ecom_new_api.Repositories.Pricing;
 using ecom_new_api.Services;
 using ecom_new_api.Services.CartOrders;
+using ecom_new_api.Services.Forms;
 using ecom_new_api.Services.LicenseOptions;
 using ecom_new_api.Services.Pricing;
+using ecom_new_api.Services.Skyrise;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -43,6 +46,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
 builder.Services.AddScoped<ILicenseOptionsRepository, LicenseOptionsRepository>();
 builder.Services.AddScoped<IPricingRepository, PricingRepository>();
+builder.Services.AddScoped<IFormRepository, FormRepository>();
 
 // ── Services ────────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderService, CartOrderService>();
@@ -50,6 +54,12 @@ builder.Services.AddScoped<CurrencyService>();
 builder.Services.AddScoped<MessageKeyService>();
 builder.Services.AddScoped<IPricingService, PricingService>();
 builder.Services.AddScoped<ILicenseOptionsService, LicenseOptionsService>();
+builder.Services.AddScoped<IFormSubmissionService, FormSubmissionService>();
+
+// ── Skyrise keycode generation (SkyIdentity OAuth + SkyRise bulk licenses) ─────
+builder.Services.Configure<SkyriseOptions>(builder.Configuration.GetSection(SkyriseOptions.SectionName));
+builder.Services.AddHttpClient(nameof(SkyriseKeycodeService));
+builder.Services.AddScoped<ISkyriseKeycodeService, SkyriseKeycodeService>();
 
 // ── Middleware pipeline (not yet implemented) ────────────────────────────────────
 // TODO: REPLACE WITH ACTUAL — register these middleware classes once implemented:

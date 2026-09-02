@@ -4,6 +4,7 @@ using ecom_new_api.Helpers;
 using ecom_new_api.Repositories.LicenseOptions;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Text.Json;
 using Xunit;
@@ -40,7 +41,8 @@ public sealed class LicenseOptionsRepositoryTests : IDisposable
     private AppDbContext NewContext() => new(_options);
 
     private LicenseOptionsRepository NewRepo(AppDbContext ctx) =>
-        new(ctx, NullLogger<LicenseOptionsRepository>.Instance);
+        new(ctx, NullLogger<LicenseOptionsRepository>.Instance,
+            new MemoryCache(new MemoryCacheOptions()));
 
     // ── SelectLicenseOptionsAsync ───────────────────────────────────────────────
 
