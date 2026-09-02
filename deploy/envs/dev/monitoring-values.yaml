@@ -17,5 +17,5 @@ kube-prometheus-stack:
   # node-exporter wants host /proc, /sys mounts which behave inconsistently
   # inside the Docker Desktop VM and were observed CrashLoopBackOff-ing.
   # Not needed for local dev (no real host metrics to scrape).
-  prometheus-node-exporter:
+  nodeExporter:
     enabled: false
