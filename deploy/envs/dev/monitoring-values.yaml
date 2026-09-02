@@ -13,3 +13,9 @@ kube-prometheus-stack:
 
   grafana:
     adminPassword: "admin"   # dev-only convenience; never do this for shared/prod clusters
+
+  # node-exporter wants host /proc, /sys mounts which behave inconsistently
+  # inside the Docker Desktop VM and were observed CrashLoopBackOff-ing.
+  # Not needed for local dev (no real host metrics to scrape).
+  prometheus-node-exporter:
+    enabled: false

@@ -9,7 +9,9 @@ auth:
 
 targetDatabase: ecommerce
 
-bacpacImport:
+seedImport:
   enabled: true
-  existingClaimName: ecom-mssql-bacpac
-  bacpacPath: /bacpac/ecom.bacpac
+  image:
+    repository: ecom-mssql-seed
+    tag: "local"
+    pullPolicy: IfNotPresent
