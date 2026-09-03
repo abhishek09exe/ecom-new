@@ -222,5 +222,13 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<LicenseByIdProcedureRow>()
             .HasNoKey()
             .ToView(null);
+
+        // The license.keycode column is varchar(40) in SQL Server, but string properties
+        // default to nvarchar in EF Core. Without IsUnicode(false), filtering by keycode
+        // sends an nvarchar parameter, forcing SQL Server to implicitly convert every row
+        // and scan instead of seeking IX_license_keycode_inc (observed ~7.7s per query).
+        modelBuilder.Entity<License>()
+            .Property(l => l.Keycode)
+            .IsUnicode(false);
     }
 }

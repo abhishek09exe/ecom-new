@@ -12,7 +12,7 @@ public class CurrencyService
     public CurrencyService(AppDbContext ctx, ILogger<CurrencyService> logger)
         => (_ctx, _logger) = (ctx, logger);
 
-    public (string CurrencyCode, string CurrencySymbol) GetCurrency(string locale)
+    public virtual (string CurrencyCode, string CurrencySymbol) GetCurrency(string locale)
     {
         var parts = locale.Replace("-", "_").Split('_');
         var lang  = parts[0].ToLower();

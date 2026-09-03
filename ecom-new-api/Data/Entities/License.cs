@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using Microsoft.EntityFrameworkCore;
 
 namespace ecom_new_api.Data.Entities;
 
@@ -12,6 +13,7 @@ public sealed class License
 
     [Column("keycode")]
     [MaxLength(40)]
+    [Unicode(false)]
     public string Keycode { get; set; } = default!;
 
     [Column("customer_id")]

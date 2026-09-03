@@ -99,7 +99,7 @@ public class MessageKeyService
     public MessageKeyService(AppDbContext ctx, ILogger<MessageKeyService> logger)
         => (_ctx, _logger) = (ctx, logger);
 
-    public async Task<ResolvedBundleContext> ResolveAsync(BundlePricingItem bundle, string locale)
+    public virtual async Task<ResolvedBundleContext> ResolveAsync(BundlePricingItem bundle, string locale)
     {
         var ctx = new ResolvedBundleContext { Bundle = bundle };
         var (lang, iso3) = ParseLocale(locale);

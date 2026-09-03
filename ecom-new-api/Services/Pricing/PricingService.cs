@@ -1,6 +1,4 @@
 using System.Globalization;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using ecom_new_api.Data.Entities;
 using ecom_new_api.Models.Requests;
 using ecom_new_api.Models.Responses;
@@ -41,33 +39,38 @@ public class PricingService : IPricingService
         PricingTotals?    bundleTotals  = null;
         var productTotals = new Dictionary<string, PricingTotals>();
 
+        // Build the full list of pricing calls (primary item + every module, across all bundle
+        // items in the request) up front, invoking the repository synchronously in the same
+        // order as before, then await them all together. This turns what used to be N sequential
+        // round-trip chains into genuinely concurrent DB work while preserving call order for
+        // any callers/mocks that depend on invocation sequence.
+        var pending = new List<(ResolvedBundleContext Context, int Lalv, Task<List<ConfiguratorPricingResult>> RowsTask)>();
+
         foreach (var bundle in request.Items)
         {
             var resolved = await _msgKey.ResolveAsync(bundle, locale);
             var lalv     = bundle.LicenseAttributeLicenseValue ?? 1;
 
             // ── Primary item ─────────────────────────────────────────────────────
-            var (itemJson, bundleJson) = BuildSpInput(resolved, locale, request.LicenseKeycodeTypeId);
-            var rows = await _repo.GetConfiguratorPricingAsync(itemJson, bundleJson);
+            var typeId = bundle.LicenseKeycodeTypeId > 0
+                ? bundle.LicenseKeycodeTypeId
+                : request.LicenseKeycodeTypeId;
 
-            if (rows.Count == 0)
-                _logger.LogWarning(
-                    "No pricing rows returned for bundle category={Category} seats={Seats} years={Years}",
-                    bundle.LicenseCategoryName, bundle.LicenseSeats, bundle.Years);
+            var primaryInput = new BundleItemPricingInput(
+                LicenseCategoryName  : bundle.LicenseCategoryName,
+                LicenseSeats         : bundle.LicenseSeats,
+                Years                : bundle.Years,
+                LicenseKeycodeTypeId : typeId,
+                Locale               : locale,
+                CartItemBundleId     : 1,
+                ItemHierarchyId      : 1,
+                StorageGb            : bundle.StorageGb,
+                RetentionModelId     : bundle.RetentionModelId
+            );
 
-            foreach (var row in rows)
-            {
-                if (string.IsNullOrEmpty(row.LicenseCategoryName)) continue;
-                var line = MapRow(row, resolved, lalv);
-                ApplyTotals(line, locale, currencyCode, ref bundleTotals, productTotals);
-                allItems.Add(line);
-            }
+            pending.Add((resolved, lalv, _repo.GetItemPricingAsync([primaryInput])));
 
-            // ── Modules — each priced as a separate primary SP call ───────────
-            // The SP's consumer path (usp_cart_select_renewal_product_set) only
-            // resolves products for item_hierarchy_id = 1. Sending modules as
-            // secondary items (hierarchy 2) leaves their product_id null and they
-            // are silently dropped from the final INNER JOIN in the SP's SELECT.
+            // ── Modules — each priced as an independent EF Core query ────────
             foreach (var module in bundle.Modules)
             {
                 var moduleItem = new BundlePricingItem
@@ -75,33 +78,54 @@ public class PricingService : IPricingService
                     LicenseCategoryName          = module.LicenseCategoryName,
                     LicenseSeats                 = module.LicenseSeats,
                     Years                        = module.Years,
-                    MessageKey                   = null,   // modules don't carry the message key
+                    MessageKey                   = null,
                     LicenseAttributeLicenseValue = lalv,
-                    LicenseKeycodeTypeId         = bundle.LicenseKeycodeTypeId,
+                    LicenseKeycodeTypeId         = typeId,
                     StorageGb                    = module.StorageGb,
                     Modules                      = new List<BundleModule>()
                 };
 
-                // Re-use the same discount/keycode context resolved for the parent bundle
                 var moduleContext = new ResolvedBundleContext
                 {
-                    Bundle                  = moduleItem,
-                    Keycode                 = resolved.Keycode,
-                    CartDiscountId          = resolved.CartDiscountId,
-                    MessageCampaignName     = resolved.MessageCampaignName,
+                    Bundle                   = moduleItem,
+                    Keycode                  = resolved.Keycode,
+                    CartDiscountId           = resolved.CartDiscountId,
+                    MessageCampaignName      = resolved.MessageCampaignName,
                     IncludeMessageKeyInBundle = false
                 };
 
-                var (mItemJson, mBundleJson) = BuildSpInput(moduleContext, locale, request.LicenseKeycodeTypeId);
-                var mRows = await _repo.GetConfiguratorPricingAsync(mItemJson, mBundleJson);
+                var moduleInput = new BundleItemPricingInput(
+                    LicenseCategoryName  : module.LicenseCategoryName,
+                    LicenseSeats         : module.LicenseSeats,
+                    Years                : module.Years,
+                    LicenseKeycodeTypeId : typeId,
+                    Locale               : locale,
+                    CartItemBundleId     : 1,
+                    ItemHierarchyId      : 2,
+                    StorageGb            : module.StorageGb
+                );
 
-                foreach (var row in mRows)
-                {
-                    if (string.IsNullOrEmpty(row.LicenseCategoryName)) continue;
-                    var line = MapRow(row, moduleContext, lalv);
-                    ApplyTotals(line, locale, currencyCode, ref bundleTotals, productTotals);
-                    allItems.Add(line);
-                }
+                pending.Add((moduleContext, lalv, _repo.GetItemPricingAsync([moduleInput])));
+            }
+        }
+
+        await Task.WhenAll(pending.Select(p => p.RowsTask)).ConfigureAwait(false);
+
+        foreach (var (context, lalv, rowsTask) in pending)
+        {
+            var rows = await rowsTask;
+
+            if (rows.Count == 0)
+                _logger.LogWarning(
+                    "No pricing rows returned for bundle category={Category} seats={Seats} years={Years}",
+                    context.Bundle.LicenseCategoryName, context.Bundle.LicenseSeats, context.Bundle.Years);
+
+            foreach (var row in rows)
+            {
+                if (string.IsNullOrEmpty(row.LicenseCategoryName)) continue;
+                var line = MapRow(row, context, lalv);
+                ApplyTotals(line, locale, currencyCode, ref bundleTotals, productTotals);
+                allItems.Add(line);
             }
         }
 
@@ -110,74 +134,6 @@ public class PricingService : IPricingService
         response.ProductTotals = productTotals;
         return response;
     }
-
-    // ── SP input builders ────────────────────────────────────────────────────────
-
-    private (string itemJson, string bundleJson) BuildSpInput(
-        ResolvedBundleContext r, string locale, int defaultTypeId)
-    {
-        var item   = r.Bundle;
-        var typeId = item.LicenseKeycodeTypeId > 0 ? item.LicenseKeycodeTypeId : defaultTypeId;
-        var lalv   = item.LicenseAttributeLicenseValue ?? 1;
-
-        var spItems = new List<object> { MakeSpItem(item, locale, typeId, lalv, 1, 1) };
-        foreach (var m in item.Modules)
-            spItems.Add(new
-            {
-                license_category_name           = m.LicenseCategoryName,
-                license_seats                   = m.LicenseSeats,
-                storage_gb                      = m.StorageGb,
-                retention_model_id              = (int?)null,
-                years                           = m.Years,
-                license_keycode_type_id         = typeId,
-                locale,
-                license_attribute_license_value = lalv,
-                start_date                      = "",
-                expiration_date                 = "",
-                cart_item_bundle_id             = 1,
-                item_hierarchy_id               = 2,
-                vendor_order_item_code          = (string?)null,
-                discount                        = (decimal?)null,
-                cart_discount_method_id         = (int?)null
-            });
-
-        var bundleObj = new Dictionary<string, object?>
-        {
-            ["locale"]                          = locale,
-            ["keycode"]                         = r.Keycode,
-            ["license_attribute_license_value"] = lalv,
-            ["license_keycode_type_id"]         = typeId,
-            ["cart_discount_id"]                = r.CartDiscountId,
-            ["message_campaign_name"]           = r.MessageCampaignName,
-        };
-        if (r.IncludeMessageKeyInBundle) bundleObj["message_key"] = item.MessageKey;
-
-        return (
-            JsonSerializer.Serialize(spItems,   SnakeCaseOpts),
-            JsonSerializer.Serialize(bundleObj, SnakeCaseOpts)
-        );
-    }
-
-    private static object MakeSpItem(
-        BundlePricingItem i, string locale, int typeId, int lalv, int bundleId, int hierarchyId)
-        => new
-        {
-            license_category_name           = i.LicenseCategoryName,
-            license_seats                   = i.LicenseSeats,
-            storage_gb                      = i.StorageGb,
-            retention_model_id              = i.RetentionModelId,
-            years                           = i.Years,
-            license_keycode_type_id         = typeId,
-            locale,
-            license_attribute_license_value = lalv,
-            start_date                      = "",
-            expiration_date                 = "",
-            cart_item_bundle_id             = bundleId,
-            item_hierarchy_id               = hierarchyId,
-            vendor_order_item_code          = (string?)null,
-            discount                        = (decimal?)null,
-            cart_discount_method_id         = (int?)null
-        };
 
     // ── Row mapper ───────────────────────────────────────────────────────────────
 
@@ -293,10 +249,4 @@ public class PricingService : IPricingService
 
     private static string Fmt(decimal v, string locale, string _)
         => v.ToString("C", CultureInfo.CreateSpecificCulture(locale.Replace("_", "-")));
-
-    private static readonly JsonSerializerOptions SnakeCaseOpts = new()
-    {
-        PropertyNamingPolicy         = JsonNamingPolicy.SnakeCaseLower,
-        DefaultIgnoreCondition       = JsonIgnoreCondition.WhenWritingNull
-    };
 }
