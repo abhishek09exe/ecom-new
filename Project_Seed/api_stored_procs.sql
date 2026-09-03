@@ -33,6 +33,13 @@
 -- left unseeded. SQL Server defers name resolution for procedure bodies, so
 -- this does not block CREATE PROCEDURE; it would only matter if a procedure
 -- actually hit its error path, which local/dev smoke testing shouldn't rely on.
+--
+-- fn_license_select_license_profile is a table-valued function referenced
+-- ~100 times across the export (heavily used internally by other procs), but
+-- its own CREATE FUNCTION definition was never present in the export at all -
+-- only call sites. Stubbed below as an inline TVF returning one hardcoded row
+-- shaped to match Data/Entities/LicenseProfileFunctionRow.cs, since
+-- LicenseOptionsRepository.SelectLicenseOptionsAsync calls it directly.
 -- =============================================================================
 
 -- =============================================================================
@@ -833,4 +840,60 @@ SELECT
     email_opt_in = 1,
     license_distribution_method_code = 'RTL',
     next_bill_date = DATEADD(yy, 1, CONVERT(DATE, GETDATE()));
+GO
+
+-- =============================================================================
+-- FUNCTION: [dbo].[fn_license_select_license_profile] (STUBBED)
+--
+-- Never present in the export as a CREATE FUNCTION - only ~100 call sites
+-- across other procedures. Stubbed as an inline TVF returning one hardcoded
+-- row shaped to match Data/Entities/LicenseProfileFunctionRow.cs, so
+-- LicenseOptionsRepository.SelectLicenseOptionsAsync can be exercised locally.
+-- =============================================================================
+CREATE FUNCTION [dbo].[fn_license_select_license_profile]
+(
+    @license_id INT
+)
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT
+        item_id = 1,
+        license_id = @license_id,
+        license_category_id = CAST(1 AS tinyint),
+        license_category_name = 'Base (mock)',
+        license_category_description = 'Base license category (mock)',
+        license_seats = 1,
+        storage_gb = CAST(NULL AS INT),
+        license_keycode_type_id = 1,
+        license_attribute_id = 1,
+        license_attribute_description = 'Standard (mock)',
+        license_attribute_license_value = 1,
+        license_attribute_license_value_description = 'Standard (mock)',
+        start_date = CONVERT(DATE, GETDATE()),
+        expiration_date = DATEADD(yy, 1, CONVERT(DATE, GETDATE())),
+        category_type_id = CAST(1 AS tinyint),
+        category_type_name = 'Retail (mock)',
+        item_hierarchy_id = CAST(1 AS tinyint),
+        item_hierarchy_name = 'Primary (mock)',
+        license_status_id = 1,
+        license_status_description = 'Active (mock)',
+        autorenewal_cycle_name = 'Annual (mock)',
+        autorenewal_cycle = CAST(1 AS decimal(18,2)),
+        usage_pricing_model_id = CAST(1 AS tinyint),
+        usage_pricing_model_name = 'Flat (mock)',
+        retention_model_id = CAST(1 AS tinyint),
+        retention_model_name = 'Standard (mock)',
+        retention_term = CAST(12 AS tinyint),
+        retention_model_type_id = CAST(1 AS tinyint),
+        product_platform_id = CAST(1 AS tinyint),
+        product_platform_name = 'Windows (mock)',
+        license_autorenewal_value = CAST(1 AS tinyint),
+        product_pricing_level_id = CAST(1 AS tinyint),
+        pricing_level = 'Standard (mock)',
+        pricing_level_description = 'Standard pricing level (mock)',
+        license_vault_json = CAST(NULL AS NVARCHAR(MAX)),
+        most_recent_order_term = CAST(12 AS float)
+);
 GO
