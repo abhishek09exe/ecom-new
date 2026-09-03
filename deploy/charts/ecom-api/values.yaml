@@ -57,6 +57,9 @@ serviceMonitor:
   interval: 15s
   path: /metrics
 
+dashboards:
+  enabled: true
+
 ingress:
   enabled: false
   className: ""

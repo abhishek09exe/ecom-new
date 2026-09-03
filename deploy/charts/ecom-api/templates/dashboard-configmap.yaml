@@ -1,0 +1,16 @@
+{{- if .Values.dashboards.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ecom-api.fullname" . }}-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ecom-api.labels" . | nindent 4 }}
+    # Grafana's sidecar (kube-prometheus-stack) watches for this label across
+    # all namespaces (monitoring.grafana.sidecar.dashboards.searchNamespace: ALL)
+    # and auto-imports any ConfigMap carrying it.
+    grafana_dashboard: "1"
+data:
+  ecom-api-overview.json: |-
+{{ .Files.Get "dashboards/ecom-api-overview.json" | indent 4 }}
+{{- end }}
