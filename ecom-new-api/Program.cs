@@ -23,7 +23,7 @@ builder.Services.AddControllers()
     });
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-
+//Argo Sync State Check
 // ── EF Core DbContext ────────────────────────────────────────────────────────────
 var ecomDbConnectionString = builder.Configuration.GetConnectionString("EcomDb")
     ?? throw new InvalidOperationException("ConnectionStrings__EcomDb is not configured.");
