@@ -25,7 +25,7 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddMemoryCache();
 
 // ── EF Core DbContext with performance optimizations ────────────────────────────
-builder.Services.AddDbContext<AppDbContext>(options =>
+void ConfigureAppDbContext(DbContextOptionsBuilder options)
 {
     options.UseSqlServer(
         builder.Configuration.GetConnectionString("EcomDb"),
@@ -37,7 +37,20 @@ builder.Services.AddDbContext<AppDbContext>(options =>
         });
     // Keep default tracking behavior - use explicit AsNoTracking() on read-only queries
     // (We can't use NoTracking as default because CartOrderRepository has write operations)
-});
+}
+
+// Factory for creating DbContext instances, including for genuinely parallel, independent queries
+// against the same remote SQL Server (a single DbContext/connection cannot run concurrent
+// operations). The connection string has MultipleActiveResultSets enabled, so multiple
+// pooled connections can be opened concurrently and dispatched in parallel to cut down
+// on round-trip latency to the remote DB.
+builder.Services.AddPooledDbContextFactory<AppDbContext>(ConfigureAppDbContext);
+
+// The scoped AppDbContext used by repositories for the "main" per-request context is resolved
+// from the same pooled factory (rather than via AddDbContext) to avoid registering two competing
+// DbContextOptions<AppDbContext> lifetimes for the same context type.
+builder.Services.AddScoped<AppDbContext>(sp =>
+    sp.GetRequiredService<IDbContextFactory<AppDbContext>>().CreateDbContext());
 
 // ── Repositories ────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();

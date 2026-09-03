@@ -14,6 +14,7 @@ namespace ecom_new_api.Repositories.LicenseOptions;
 public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
 {
     private readonly AppDbContext _db;
+    private readonly IDbContextFactory<AppDbContext> _dbContextFactory;
     private readonly ILogger<LicenseOptionsRepository> _logger;
     private readonly IMemoryCache _cache;
 
@@ -23,11 +24,26 @@ public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
     private const string CacheKey_CapabilityTypes = "CapabilityTypes_All";
     private static readonly TimeSpan CacheDuration = TimeSpan.FromHours(4); // Reference data changes rarely
 
-    public LicenseOptionsRepository(AppDbContext db, ILogger<LicenseOptionsRepository> logger, IMemoryCache cache)
+    public LicenseOptionsRepository(
+        AppDbContext db,
+        IDbContextFactory<AppDbContext> dbContextFactory,
+        ILogger<LicenseOptionsRepository> logger,
+        IMemoryCache cache)
     {
         _db = db;
+        _dbContextFactory = dbContextFactory;
         _logger = logger;
         _cache = cache;
+    }
+
+    /// <summary>
+    /// Runs a query against a freshly created, isolated DbContext so it can execute concurrently
+    /// with other queries on the pooled factory without sharing a single DbContext across threads.
+    /// </summary>
+    private async Task<T> RunIsolatedAsync<T>(Func<AppDbContext, Task<T>> query, CancellationToken ct)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+        return await query(db);
     }
 
     public async Task<string?> ResolveKeycodeFromMessageKeyAsync(
@@ -93,92 +109,116 @@ public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
             legacyLicenseRow = legacyLicenseRows.FirstOrDefault();
         }
 
-        var fallbackLicenseTypeDescription = await _db.LicenseType
-            .Where(t => t.LicenseTypeId == license.LicenseTypeId)
-            .Select(t => t.LicenseTypeDescription)
-            .FirstOrDefaultAsync(ct);
+        // Genuinely parallel: each query below gets its own DbContext/connection from the pooled
+        // factory so they can execute concurrently against the remote SQL Server.
+        var licenseTypeId = license.LicenseTypeId;
+        var licenseId = license.LicenseId;
+        var licenseDistributionMethodId = license.LicenseDistributionMethodId;
+        var customerId = license.CustomerId;
 
-        var fallbackParentKeycode = await _db.LicenseParent
-            .Where(lp => lp.ChildLicenseId == license.LicenseId)
-            .Join(_db.License, lp => lp.ParentLicenseId, parent => parent.LicenseId, (lp, parent) => parent.Keycode)
-            .FirstOrDefaultAsync(ct);
+        // Cached reference data - avoids a DB round trip per request (license types change rarely).
+        var licenseTypesTask = GetLicenseTypesCachedAsync(ct);
 
-        var fallbackConsumedSeats = await _db.LicenseActiveSeats
-            .Where(r => r.LicenseId == license.LicenseId)
+        var task2 = RunIsolatedAsync(async db => await db.LicenseParent
+            .Where(lp => lp.ChildLicenseId == licenseId)
+            .Join(db.License, lp => lp.ParentLicenseId, parent => parent.LicenseId, (lp, parent) => parent.Keycode)
+            .FirstOrDefaultAsync(ct), ct);
+
+        var task3 = RunIsolatedAsync(async db => await db.LicenseActiveSeats
+            .Where(r => r.LicenseId == licenseId)
             .OrderByDescending(r => r.EndDate)
             .Select(r => (int?)r.ConsumedSeats)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(ct), ct);
 
-        var fallbackStorageGb = await _db.LicenseStorage
-            .Where(r => r.LicenseId == license.LicenseId)
+        var task4 = RunIsolatedAsync(async db => await db.LicenseStorage
+            .Where(r => r.LicenseId == licenseId)
             .OrderByDescending(r => r.LicenseStorageId)
             .Select(r => (int?)r.StorageGb)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(ct), ct);
 
-        var fallbackAttribute = await (from lal in _db.LicenseAttributeLicense
-                                       join la in _db.LicenseAttribute on lal.LicenseAttributeId equals la.LicenseAttributeId
-                                       join lav in _db.LicenseAttributeLicenseValue on lal.LicenseAttributeLicenseValue equals (int?)lav.Value into lavJoin
-                                       from lav in lavJoin.DefaultIfEmpty()
-                                       where lal.LicenseId == license.LicenseId
-                                       orderby lal.LicenseAttributeLicenseId descending
-                                       select new
-                                       {
-                                           la.LicenseAttributeDescription,
-                                           la.LicenseAttributeTag,
-                                           lal.LicenseAttributeLicenseValue,
-                                           LicenseAttributeLicenseValueDescription = lav == null ? null : lav.Description,
-                                           LicenseAttributeLastModified = (DateTime?)lal.ModifiedDate,
-                                       }).AsNoTracking().FirstOrDefaultAsync(ct);
+        var task5 = RunIsolatedAsync(async db => await (from lal in db.LicenseAttributeLicense
+                     join la in db.LicenseAttribute on lal.LicenseAttributeId equals la.LicenseAttributeId
+                     join lav in db.LicenseAttributeLicenseValue on lal.LicenseAttributeLicenseValue equals (int?)lav.Value into lavJoin
+                     from lav in lavJoin.DefaultIfEmpty()
+                     where lal.LicenseId == licenseId
+                     orderby lal.LicenseAttributeLicenseId descending
+                     select new
+                     {
+                         la.LicenseAttributeDescription,
+                         la.LicenseAttributeTag,
+                         lal.LicenseAttributeLicenseValue,
+                         LicenseAttributeLicenseValueDescription = lav == null ? null : lav.Description,
+                         LicenseAttributeLastModified = (DateTime?)lal.ModifiedDate,
+                     }).AsNoTracking().FirstOrDefaultAsync(ct), ct);
 
-        var fallbackRenewalCount = await (from oil in _db.OrderItemLicense
-                                          join oi in _db.OrderItem on oil.OrderItemId equals oi.OrderItemId
-                                          join p in _db.Product on oi.ProductId equals p.ProductId
-                                          where oil.LicenseId == license.LicenseId && p.ProductTypeId == 2
-                                          select oil.OrderItemLicenseId).CountAsync(ct);
+        var task6 = RunIsolatedAsync(async db => await (from oil in db.OrderItemLicense
+                     join oi in db.OrderItem on oil.OrderItemId equals oi.OrderItemId
+                     join p in db.Product on oi.ProductId equals p.ProductId
+                     where oil.LicenseId == licenseId && p.ProductTypeId == 2
+                     select oil.OrderItemLicenseId).CountAsync(ct), ct);
 
-        var fallbackChannel = await (from lh in _db.LicenseHistory
-                                     join ldmc in _db.LicenseDistributionMethodChannel on lh.LicenseDistributionMethodId equals ldmc.LicenseDistributionMethodId
-                                     join ch in _db.Channel on ldmc.ChannelId equals ch.ChannelId
-                                     where lh.LicenseId == license.LicenseId
-                                     orderby lh.HistoryDate
-                                     select new { ch.ChannelName, ActivationDate = (DateTime?)lh.InsertDate }).AsNoTracking().FirstOrDefaultAsync(ct);
+        var task7 = RunIsolatedAsync(async db => await (from lh in db.LicenseHistory
+                     join ldmc in db.LicenseDistributionMethodChannel on lh.LicenseDistributionMethodId equals ldmc.LicenseDistributionMethodId
+                     join ch in db.Channel on ldmc.ChannelId equals ch.ChannelId
+                     where lh.LicenseId == licenseId
+                     orderby lh.HistoryDate
+                     select new { ch.ChannelName, ActivationDate = (DateTime?)lh.InsertDate }).AsNoTracking().FirstOrDefaultAsync(ct), ct);
 
-        var fallbackDistributionCode = await _db.LicenseDistributionMethod
-            .Where(m => m.LicenseDistributionMethodId == license.LicenseDistributionMethodId)
+        var task8 = RunIsolatedAsync(async db => await db.LicenseDistributionMethod
+            .Where(m => m.LicenseDistributionMethodId == licenseDistributionMethodId)
             .Select(m => m.LicenseDistributionMethodCode)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(ct), ct);
 
-        var fallbackNextBillDate = await _db.LicenseNextBillDate
-            .Where(n => n.LicenseId == license.LicenseId)
+        var task9 = RunIsolatedAsync(async db => await db.LicenseNextBillDate
+            .Where(n => n.LicenseId == licenseId)
             .OrderByDescending(n => n.LicenseNextBillDateId)
             .Select(n => (DateTime?)n.NextBillDate)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(ct), ct);
 
-        var fallbackEmailOptIn = await _db.Customer
-            .Where(c => c.CustomerId == license.CustomerId)
+        var task10 = RunIsolatedAsync(async db => await db.Customer
+            .Where(c => c.CustomerId == customerId)
             .Select(c => c.OptIn)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(ct), ct);
 
-        var categoryRows = await (from lcl in _db.LicenseCategoryLicense
-                                  join lc in _db.LicenseCategory on lcl.LicenseCategoryId equals lc.LicenseCategoryId
-                                  where lcl.LicenseId == license.LicenseId
-                                  orderby lcl.LicenseCategoryLicenseId descending
-                                  select new
-                                  {
-                                      lc.LicenseCategoryId,
-                                      lc.LicenseCategoryName,
-                                      lc.LicenseCategoryDescription,
-                                      lc.BaseCapabilityId,
-                                      lcl.StartDate,
-                                      EndDate = lcl.EndDate
-                                  }).AsNoTracking().ToListAsync(ct);
+        var categoryRowsTask = RunIsolatedAsync(async db => await (from lcl in db.LicenseCategoryLicense
+                                join lc in db.LicenseCategory on lcl.LicenseCategoryId equals lc.LicenseCategoryId
+                                where lcl.LicenseId == licenseId
+                                orderby lcl.LicenseCategoryLicenseId descending
+                                select new
+                                {
+                                    lc.LicenseCategoryId,
+                                    lc.LicenseCategoryName,
+                                    lc.LicenseCategoryDescription,
+                                    lc.BaseCapabilityId,
+                                    lcl.StartDate,
+                                    EndDate = lcl.EndDate
+                                }).AsNoTracking().ToListAsync(ct), ct);
 
-        var capabilityById = await (from c in _db.LicenseCapability
-                                    join t in _db.CapabilityType on c.CapabilityTypeId equals t.CapabilityTypeId
-                                    where c.LicenseId == license.LicenseId
-                                    select new { c.CapabilityId, t.CapabilityTypeDescription })
-                                    .AsNoTracking()
-                                    .ToDictionaryAsync(x => x.CapabilityId, x => x.CapabilityTypeDescription, ct);
+        var capabilityByIdTask = RunIsolatedAsync(async db => await (from c in db.LicenseCapability
+                                  join t in db.CapabilityType on c.CapabilityTypeId equals t.CapabilityTypeId
+                                  where c.LicenseId == licenseId
+                                  select new { c.CapabilityId, t.CapabilityTypeDescription })
+                                  .AsNoTracking()
+                                  .ToDictionaryAsync(x => x.CapabilityId, x => x.CapabilityTypeDescription, ct), ct);
+
+        await Task.WhenAll(
+            licenseTypesTask, task2, task3, task4, task5, task6, task7, task8, task9, task10,
+            categoryRowsTask, capabilityByIdTask).ConfigureAwait(false);
+
+        // Extract results
+        var licenseTypes = await licenseTypesTask;
+        licenseTypes.TryGetValue(licenseTypeId, out var fallbackLicenseTypeDescription);
+        var fallbackParentKeycode = await task2;
+        var fallbackConsumedSeats = await task3;
+        var fallbackStorageGb = await task4;
+        var fallbackAttribute = await task5;
+        var fallbackRenewalCount = await task6;
+        var fallbackChannel = await task7;
+        var fallbackDistributionCode = await task8;
+        var fallbackNextBillDate = await task9;
+        var fallbackEmailOptIn = await task10;
+        var categoryRows = await categoryRowsTask;
+        var capabilityById = await capabilityByIdTask;
 
         var primaryCategory = categoryRows.FirstOrDefault();
 
@@ -270,35 +310,33 @@ public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
 
         var (languageCode, locationCode) = ParseLocaleToLanguageAndLocation(locale);
 
-        var upgradeCategoryRows = new List<dynamic>();
-        if (primaryCategory is not null)
-        {
-            var upgradeRows = await (from plcu in _db.ProductLicenseCategoryUpgrade
-                                     join baseLc in _db.LicenseCategory on plcu.LicenseCategoryId equals baseLc.LicenseCategoryId
-                                     join upgradeLc in _db.LicenseCategory on plcu.UpgradeLicenseCategoryId equals upgradeLc.LicenseCategoryId
-                                     join ih in _db.ItemHierarchy on plcu.ItemHierarchyId equals (byte?)ih.ItemHierarchyId
-                                     where plcu.LicenseCategoryId == primaryCategory.LicenseCategoryId
-                                        && plcu.LanguageCode == languageCode
-                                        && plcu.LocationCode == locationCode
-                                        && plcu.ItemHierarchyId == 1
-                                     orderby upgradeLc.LicenseCategoryName
-                                     select new
-                                     {
-                                         UpgradeLicenseCategoryId = (int)upgradeLc.LicenseCategoryId,
-                                         LicenseCategoryName = baseLc.LicenseCategoryName,
-                                         UpgradeLicenseCategoryName = upgradeLc.LicenseCategoryName,
-                                         ItemHierarchyId = ih.ItemHierarchyId,
-                                         ItemHierarchyName = ih.ItemHierarchyName,
-                                     }).AsNoTracking().ToListAsync(ct);
+        // Genuinely parallel: independent of each other, each gets its own isolated context.
+        var upgradeTask = primaryCategory is null
+            ? Task.FromResult(new List<dynamic>())
+            : RunIsolatedAsync(async db =>
+                (await (from plcu in db.ProductLicenseCategoryUpgrade
+               join baseLc in db.LicenseCategory on plcu.LicenseCategoryId equals baseLc.LicenseCategoryId
+               join upgradeLc in db.LicenseCategory on plcu.UpgradeLicenseCategoryId equals upgradeLc.LicenseCategoryId
+               join ih in db.ItemHierarchy on plcu.ItemHierarchyId equals (byte?)ih.ItemHierarchyId
+               where plcu.LicenseCategoryId == primaryCategory.LicenseCategoryId
+                  && plcu.LanguageCode == languageCode
+                  && plcu.LocationCode == locationCode
+                  && plcu.ItemHierarchyId == 1
+               orderby upgradeLc.LicenseCategoryName
+               select new
+               {
+                   UpgradeLicenseCategoryId = (int)upgradeLc.LicenseCategoryId,
+                   LicenseCategoryName = baseLc.LicenseCategoryName,
+                   UpgradeLicenseCategoryName = upgradeLc.LicenseCategoryName,
+                   ItemHierarchyId = ih.ItemHierarchyId,
+                   ItemHierarchyName = ih.ItemHierarchyName,
+               }).AsNoTracking().ToListAsync(ct)).Cast<dynamic>().ToList(), ct);
 
-            upgradeCategoryRows = upgradeRows.Cast<dynamic>().ToList();
-        }
-
-        var seats = await _db.LicenseSeat
-            .Where(ls => ls.LicenseId == license.LicenseId)
+        var seatsTask = RunIsolatedAsync(async db => await db.LicenseSeat
+            .Where(ls => ls.LicenseId == licenseId)
             .OrderByDescending(ls => ls.LicenseSeatId)
             .Select(ls => (int?)ls.LicenseSeats)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(ct), ct);
 
         var upgradeCategories = upgradeCategoryRows
             .ToDictionary(
@@ -341,10 +379,12 @@ public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
         List<ProductOptionResponse> productOptions = [];
         if (allowedCategoryIds.Count > 0)
         {
-            var products = await (from plc in _db.ProductLicenseCategory
-                               join p in _db.Product on plc.ProductId equals p.ProductId
-                               join pt in _db.ProductType on p.ProductTypeId equals pt.ProductTypeId
-                               join lc in _db.LicenseCategory on plc.LicenseCategoryId equals lc.LicenseCategoryId
+            // Genuinely parallel: each query gets its own isolated context so they can run
+            // concurrently against the remote SQL Server without sharing a single DbContext.
+            var productsTask = RunIsolatedAsync(async db => await (from plc in db.ProductLicenseCategory
+                               join p in db.Product on plc.ProductId equals p.ProductId
+                               join pt in db.ProductType on p.ProductTypeId equals pt.ProductTypeId
+                               join lc in db.LicenseCategory on plc.LicenseCategoryId equals lc.LicenseCategoryId
                                where allowedCategoryIds.Contains(plc.LicenseCategoryId)
                                   && (p.ProductTypeId == 1 || p.ProductTypeId == 2)
                                select new
@@ -354,27 +394,34 @@ public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
                                    TypeDescription = pt.ProductTypeDescription,
                                    OptionLicenseCategoryId = plc.LicenseCategoryId,
                                    OptionLicenseCategoryName = lc.LicenseCategoryName,
-                               }).AsNoTracking().ToListAsync(ct);
+                               }).AsNoTracking().ToListAsync(ct), ct);
 
-            var allYears = await _db.ProductLicenseCategoryYears
+            var allYearsTask = RunIsolatedAsync(async db => await db.ProductLicenseCategoryYears
                 .Where(py => allowedCategoryIds.Contains(py.LicenseCategoryId))
                 .Select(py => new { py.LicenseCategoryId, py.Years })
                 .AsNoTracking()
-                .ToListAsync(ct);
+                .ToListAsync(ct), ct);
 
-            var allSeats = await _db.ProductLicenseCategorySeat
+            var allSeatsTask = RunIsolatedAsync(async db => await db.ProductLicenseCategorySeat
                 .Where(ps => allowedCategoryIds.Contains(ps.LicenseCategoryId))
                 .Select(ps => new { ps.LicenseCategoryId, ps.Seats })
                 .AsNoTracking()
-                .ToListAsync(ct);
+                .ToListAsync(ct), ct);
 
-            var allPricing = await (from pp in _db.ProductPricing
-                                    join plc in _db.ProductLicenseCategory on pp.ProductId equals plc.ProductId
-                                    where allowedCategoryIds.Contains(plc.LicenseCategoryId)
-                                    select new { pp.ProductId, pp.RetailPrice })
-                                    .AsNoTracking()
-                                    .Distinct()
-                                    .ToListAsync(ct);
+            var allPricingTask = RunIsolatedAsync(async db => await (from pp in db.ProductPricing
+                                 join plc in db.ProductLicenseCategory on pp.ProductId equals plc.ProductId
+                                 where allowedCategoryIds.Contains(plc.LicenseCategoryId)
+                                 select new { pp.ProductId, pp.RetailPrice })
+                                 .AsNoTracking()
+                                 .Distinct()
+                                 .ToListAsync(ct), ct);
+
+            await Task.WhenAll(productsTask, allYearsTask, allSeatsTask, allPricingTask).ConfigureAwait(false);
+
+            var products = await productsTask;
+            var allYears = await allYearsTask;
+            var allSeats = await allSeatsTask;
+            var allPricing = await allPricingTask;
 
             if (products.Count > 0)
             {
