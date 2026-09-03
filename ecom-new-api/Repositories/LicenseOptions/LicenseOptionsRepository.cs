@@ -338,11 +338,6 @@ public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
             .Select(ls => (int?)ls.LicenseSeats)
             .FirstOrDefaultAsync(ct), ct);
 
-        await Task.WhenAll(upgradeTask, seatsTask).ConfigureAwait(false);
-
-        var upgradeCategoryRows = await upgradeTask;
-        var seats = await seatsTask;
-
         var upgradeCategories = upgradeCategoryRows
             .ToDictionary(
                 row => (string)row.UpgradeLicenseCategoryName ?? string.Empty,
