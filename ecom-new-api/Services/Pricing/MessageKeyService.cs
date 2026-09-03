@@ -3,7 +3,9 @@ using System.Data;
 using System.Text.Json;
 using ecom_new_api.Data;
 using ecom_new_api.Models.Requests;
+using ecom_new_api.Observability;
 using Microsoft.Data.SqlClient;
+using Prometheus;
 using Microsoft.EntityFrameworkCore;
 
 namespace ecom_new_api.Services.Pricing;
@@ -170,27 +172,54 @@ public class MessageKeyService
 
     private async Task<MessageKeyResult?> ClassifyKeyAsync(BundlePricingItem bundle)
     {
+        const string procName = "usp_cart_select_message_key";
         var p1 = new SqlParameter("@message_key",            SqlDbType.VarChar, 36)  { Value = bundle.MessageKey ?? (object)DBNull.Value };
         var p2 = new SqlParameter("@license_category_name",  SqlDbType.VarChar, 20)  { Value = (object?)bundle.LicenseCategoryName ?? DBNull.Value };
         var p3 = new SqlParameter("@years",                  SqlDbType.Int)           { Value = (object?)(int?)bundle.Years          ?? DBNull.Value };
         var p4 = new SqlParameter("@seats",                  SqlDbType.Int)           { Value = bundle.LicenseSeats };
 
-        return (await _ctx.Database
-            .SqlQueryRaw<MessageKeyResult>(
-                "EXEC usp_cart_select_message_key @message_key, @license_category_name, @years, @seats",
-                p1, p2, p3, p4)
-            .ToListAsync()).FirstOrDefault();
+        using var timer = AppMetrics.DbProcDuration.WithLabels(procName).NewTimer();
+        try
+        {
+            var result = (await _ctx.Database
+                .SqlQueryRaw<MessageKeyResult>(
+                    "EXEC usp_cart_select_message_key @message_key, @license_category_name, @years, @seats",
+                    p1, p2, p3, p4)
+                .ToListAsync()).FirstOrDefault();
+            AppMetrics.DbProcCalls.WithLabels(procName, "success").Inc();
+            return result;
+        }
+        catch
+        {
+            AppMetrics.DbProcCalls.WithLabels(procName, "error").Inc();
+            throw;
+        }
     }
 
     private async Task<string?> GetKeycodeAsync(string? messageKey)
     {
         if (string.IsNullOrEmpty(messageKey)) return null;
+        const string procName = "usp_cart_select_message_key";
         var p = new SqlParameter("@message_key", SqlDbType.VarChar, 36) { Value = messageKey };
-        var r = (await _ctx.Database
-            .SqlQueryRaw<MessageKeyResult>(
-                "EXEC usp_cart_select_message_key @message_key",
-                p)
-            .ToListAsync()).FirstOrDefault();
+
+        MessageKeyResult? r;
+        using (var timer = AppMetrics.DbProcDuration.WithLabels(procName).NewTimer())
+        {
+            try
+            {
+                r = (await _ctx.Database
+                    .SqlQueryRaw<MessageKeyResult>(
+                        "EXEC usp_cart_select_message_key @message_key",
+                        p)
+                    .ToListAsync()).FirstOrDefault();
+                AppMetrics.DbProcCalls.WithLabels(procName, "success").Inc();
+            }
+            catch
+            {
+                AppMetrics.DbProcCalls.WithLabels(procName, "error").Inc();
+                throw;
+            }
+        }
 
         if (r?.MessageKeyJson == null) return null;
         var j = JsonSerializer.Deserialize<MessageKeyJson>(r.MessageKeyJson, JsonOpts);
@@ -200,6 +229,8 @@ public class MessageKeyService
     private async Task<string?> GetCampaignNameAsync(string? keycode)
     {
         if (string.IsNullOrEmpty(keycode)) return null;
+        const string procName = "usp_cart_select_license_campaign";
+        using var timer = AppMetrics.DbProcDuration.WithLabels(procName).NewTimer();
         try
         {
             var p = new SqlParameter("@keycode", SqlDbType.VarChar, 40) { Value = keycode };
@@ -208,11 +239,13 @@ public class MessageKeyService
                     "EXEC usp_cart_select_license_campaign @keycode",
                     p)
                 .ToListAsync()).FirstOrDefault();
+            AppMetrics.DbProcCalls.WithLabels(procName, "success").Inc();
             return r?.MessageCampaignName;
         }
         catch (Microsoft.Data.SqlClient.SqlException ex)
         {
             // SP not available in this environment — campaign name is optional metadata only
+            AppMetrics.DbProcCalls.WithLabels(procName, "error").Inc();
             _logger.LogWarning(ex, "usp_cart_select_license_campaign unavailable for keycode={Keycode}; skipping campaign name", keycode);
             return null;
         }
@@ -220,6 +253,8 @@ public class MessageKeyService
 
     private async Task<bool> VerifyDiscountAsync(int cartDiscountId, BundlePricingItem bundle)
     {
+        const string procName = "usp_cart_select_cart_discount_item";
+        using var timer = AppMetrics.DbProcDuration.WithLabels(procName).NewTimer();
         try
         {
             var p = new SqlParameter("@cart_discount_id", SqlDbType.Int) { Value = cartDiscountId };
@@ -228,6 +263,7 @@ public class MessageKeyService
                     "EXEC usp_cart_select_cart_discount_item @cart_discount_id",
                     p)
                 .ToListAsync();
+            AppMetrics.DbProcCalls.WithLabels(procName, "success").Inc();
 
             return items.Any(i =>
                 (i.LicenseCategoryName == null || i.LicenseCategoryName == bundle.LicenseCategoryName) &&
@@ -236,6 +272,7 @@ public class MessageKeyService
         }
         catch (Microsoft.Data.SqlClient.SqlException ex)
         {
+            AppMetrics.DbProcCalls.WithLabels(procName, "error").Inc();
             _logger.LogWarning(ex, "usp_cart_select_cart_discount_item failed for cart_discount_id={CartDiscountId}", cartDiscountId);
             return false;
         }
@@ -244,20 +281,25 @@ public class MessageKeyService
     private async Task<CampaignDiscountResult?> GetDiscountByCampaignAsync(
         string messageKey, BundlePricingItem? bundle)
     {
+        const string procName = "usp_message_select_message_campaign_cart_discount";
+        using var timer = AppMetrics.DbProcDuration.WithLabels(procName).NewTimer();
         try
         {
             var p1 = new SqlParameter("@message_campaign_key",    SqlDbType.UniqueIdentifier) { Value = Guid.Parse(messageKey) };
             var p2 = new SqlParameter("@license_category_name",   SqlDbType.VarChar, 10)      { Value = (object?)bundle?.LicenseCategoryName ?? DBNull.Value };
             var p3 = new SqlParameter("@license_seats",           SqlDbType.Int)               { Value = (object?)bundle?.LicenseSeats         ?? DBNull.Value };
 
-            return (await _ctx.Database
+            var result = (await _ctx.Database
                 .SqlQueryRaw<CampaignDiscountResult>(
                     "EXEC usp_message_select_message_campaign_cart_discount @message_campaign_key, @license_category_name, @license_seats",
                     p1, p2, p3)
                 .ToListAsync()).FirstOrDefault();
+            AppMetrics.DbProcCalls.WithLabels(procName, "success").Inc();
+            return result;
         }
         catch (Microsoft.Data.SqlClient.SqlException ex)
         {
+            AppMetrics.DbProcCalls.WithLabels(procName, "error").Inc();
             _logger.LogWarning(ex, "usp_message_select_message_campaign_cart_discount failed for message_key={MessageKey}", messageKey);
             return null;
         }
@@ -265,17 +307,22 @@ public class MessageKeyService
 
     private async Task<CartDiscountResult?> GetDiscountKeyAsync(int cartDiscountId, BundlePricingItem bundle)
     {
+        const string procName = "usp_cart_select_cart_discount";
+        using var timer = AppMetrics.DbProcDuration.WithLabels(procName).NewTimer();
         try
         {
             var p = new SqlParameter("@cart_discount_id", SqlDbType.Int) { Value = cartDiscountId };
-            return (await _ctx.Database
+            var result = (await _ctx.Database
                 .SqlQueryRaw<CartDiscountResult>(
                     "EXEC usp_cart_select_cart_discount @cart_discount_id",
                     p)
                 .ToListAsync()).FirstOrDefault();
+            AppMetrics.DbProcCalls.WithLabels(procName, "success").Inc();
+            return result;
         }
         catch (Microsoft.Data.SqlClient.SqlException ex)
         {
+            AppMetrics.DbProcCalls.WithLabels(procName, "error").Inc();
             _logger.LogWarning(ex, "usp_cart_select_cart_discount failed for cart_discount_id={CartDiscountId}", cartDiscountId);
             return null;
         }
@@ -284,6 +331,8 @@ public class MessageKeyService
     private async Task<CampaignDiscountResult?> GetSiteDiscountAsync(
         BundlePricingItem bundle, string lang, string iso3)
     {
+        const string procName = "usp_cart_select_new_product_discount";
+        using var timer = AppMetrics.DbProcDuration.WithLabels(procName).NewTimer();
         try
         {
             var p1 = new SqlParameter("@license_category_name",   SqlDbType.VarChar, 10) { Value = bundle.LicenseCategoryName };
@@ -299,6 +348,7 @@ public class MessageKeyService
                     "EXEC usp_cart_select_new_product_discount @license_category_name, @license_seats, NULL, @years, @cart_discount_method_id, @discount, @language_code, @location_code",
                     p1, p2, p3, p4, p5, p6, p7)
                 .ToListAsync()).FirstOrDefault();
+            AppMetrics.DbProcCalls.WithLabels(procName, "success").Inc();
 
             if (row == null) return null;
             return new CampaignDiscountResult
@@ -311,6 +361,7 @@ public class MessageKeyService
         }
         catch (Microsoft.Data.SqlClient.SqlException ex)
         {
+            AppMetrics.DbProcCalls.WithLabels(procName, "error").Inc();
             _logger.LogWarning(ex, "usp_cart_select_new_product_discount failed for category={Category} lang={Lang} loc={Iso3}", bundle.LicenseCategoryName, lang, iso3);
             return null;
         }

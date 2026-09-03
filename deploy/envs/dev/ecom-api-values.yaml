@@ -3,7 +3,7 @@ replicaCount: 1
 
 image:
   repository: ecom-new-api
-  tag: "0.1.0"
+  tag: "0.2.0"
   pullPolicy: IfNotPresent   # image is built locally into Docker Desktop's daemon, no registry push needed
 
 env:

@@ -1,6 +1,7 @@
 using ecom_new_api.Data;
 using ecom_new_api.HealthChecks;
 using ecom_new_api.Helpers;
+using ecom_new_api.Observability;
 using ecom_new_api.Repositories.Cart;
 using ecom_new_api.Repositories.LicenseOptions;
 using ecom_new_api.Repositories.Pricing;
@@ -78,6 +79,23 @@ app.UseHttpMetrics(); // Collect HTTP request metrics
 app.MapMetrics(); // Expose metrics at /metrics endpoint
 app.MapHealthChecks("/healthz", new HealthCheckOptions { Predicate = _ => false });
 app.MapHealthChecks("/readyz", new HealthCheckOptions { Predicate = c => c.Tags.Contains("ready") });
+
+// Count unhandled exceptions by type, regardless of environment. Runs after routing so
+// UseDeveloperExceptionPage()/any later exception handler still gets to render the response —
+// this only observes and re-throws.
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (Exception ex)
+    {
+        AppMetrics.ErrorsTotal.WithLabels(ex.GetType().Name).Inc();
+        throw;
+    }
+});
+
 // TODO: REPLACE WITH ACTUAL — add middleware here in order:
 //   app.UseMiddleware<CartBootstrapMiddleware>();
 //   app.UseMiddleware<CsrfValidationMiddleware>();

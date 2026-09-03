@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using ecom_new_api.Data.Entities;
 using ecom_new_api.Models.Requests;
 using ecom_new_api.Models.Responses;
+using ecom_new_api.Observability;
 using ecom_new_api.Repositories.Pricing;
 
 namespace ecom_new_api.Services.Pricing;
@@ -51,9 +52,16 @@ public class PricingService : IPricingService
             var rows = await _repo.GetConfiguratorPricingAsync(itemJson, bundleJson);
 
             if (rows.Count == 0)
+            {
+                AppMetrics.BusinessOperations.WithLabels("bundle_pricing", "not_found").Inc();
                 _logger.LogWarning(
                     "No pricing rows returned for bundle category={Category} seats={Seats} years={Years}",
                     bundle.LicenseCategoryName, bundle.LicenseSeats, bundle.Years);
+            }
+            else
+            {
+                AppMetrics.BusinessOperations.WithLabels("bundle_pricing", "found").Inc();
+            }
 
             foreach (var row in rows)
             {

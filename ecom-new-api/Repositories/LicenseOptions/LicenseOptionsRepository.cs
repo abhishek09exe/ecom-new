@@ -1,7 +1,9 @@
 using ecom_new_api.Data;
 using ecom_new_api.Data.Entities;
 using ecom_new_api.Models.Responses;
+using ecom_new_api.Observability;
 using Microsoft.EntityFrameworkCore;
+using Prometheus;
 
 namespace ecom_new_api.Repositories.LicenseOptions;
 
@@ -73,12 +75,23 @@ public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
         LicenseByIdProcedureRow? legacyLicenseRow = null;
         if (_db.Database.IsSqlServer())
         {
-            var legacyLicenseRows = await _db.LicenseByIdProcedureRows
-                .FromSqlInterpolated($"EXEC dbo.usp_license_select_license_by_id @license_id = {license.LicenseId}")
-                .AsNoTracking()
-                .ToListAsync(ct);
+            const string procName = "usp_license_select_license_by_id";
+            using var timer = AppMetrics.DbProcDuration.WithLabels(procName).NewTimer();
+            try
+            {
+                var legacyLicenseRows = await _db.LicenseByIdProcedureRows
+                    .FromSqlInterpolated($"EXEC dbo.usp_license_select_license_by_id @license_id = {license.LicenseId}")
+                    .AsNoTracking()
+                    .ToListAsync(ct);
 
-            legacyLicenseRow = legacyLicenseRows.FirstOrDefault();
+                legacyLicenseRow = legacyLicenseRows.FirstOrDefault();
+                AppMetrics.DbProcCalls.WithLabels(procName, "success").Inc();
+            }
+            catch
+            {
+                AppMetrics.DbProcCalls.WithLabels(procName, "error").Inc();
+                throw;
+            }
         }
 
         var fallbackLicenseTypeDescription = await _db.LicenseType
@@ -191,6 +204,10 @@ public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
         List<LicenseProfileFunctionRow> profileRows;
         if (_db.Database.IsSqlServer())
         {
+            const string procName = "fn_license_select_license_profile";
+            using var timer = AppMetrics.DbProcDuration.WithLabels(procName).NewTimer();
+            try
+            {
             profileRows = await _db.LicenseProfileFunctionRows
                 .FromSqlInterpolated($@"
                     SELECT
@@ -233,6 +250,13 @@ public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
                     FROM dbo.fn_license_select_license_profile({license.LicenseId}) f")
                 .AsNoTracking()
                 .ToListAsync(ct);
+                AppMetrics.DbProcCalls.WithLabels(procName, "success").Inc();
+            }
+            catch
+            {
+                AppMetrics.DbProcCalls.WithLabels(procName, "error").Inc();
+                throw;
+            }
         }
         else
         {
