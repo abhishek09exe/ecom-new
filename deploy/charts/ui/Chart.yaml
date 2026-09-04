@@ -1,0 +1,6 @@
+apiVersion: v2
+name: ui
+description: Helm chart for the site_smb (OpenText brands) Next.js frontend
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

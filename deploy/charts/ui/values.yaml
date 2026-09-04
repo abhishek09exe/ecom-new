@@ -1,0 +1,72 @@
+# Default values for ui (site_smb Next.js frontend).
+# Environment-specific overrides live in deploy/envs/<env>/ui-values.yaml
+#
+# NOTE: The application source (UI_DONT_COMMIT/opentext-brands/site_smb) is
+# intentionally excluded from this repo. This chart only references a
+# pre-built image (built locally via `docker build -f site_smb/Dockerfile`)
+# and a pre-existing Secret containing the Optimizely CMS/Graph credentials.
+
+replicaCount: 1
+
+image:
+  repository: site-smb
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 3000
+  targetPort: 3000
+  name: http
+
+# Non-secret configuration, rendered into a ConfigMap and consumed via envFrom.
+env:
+  NODE_ENV: "production"
+  PORT: "3000"
+
+# Optimizely CMS/Graph secrets are NOT set here. They must already exist as a
+# Secret (created out-of-band, e.g. `kubectl create secret generic`) with the
+# keys referenced below. This chart only references it — it never creates or
+# stores the values.
+secrets:
+  existingSecretName: ui-smb-credentials
+  keys:
+    - OPTIMIZELY_CMS_SITE_ID
+    - OPTIMIZELY_GRAPH_SINGLE_KEY
+    - OPTIMIZELY_GRAPH_APP_KEY
+    - OPTIMIZELY_GRAPH_SECRET
+    - OPTIMIZELY_GRAPH_GATEWAY
+    - NEXT_PUBLIC_OPTIMIZELY_CMS_URL
+    - NEXT_PUBLIC_SITE_DOMAIN
+    - NEXT_PUBLIC_SITE_PRIMARY
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+probes:
+  liveness:
+    path: /en/
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  readiness:
+    path: /en/
+    initialDelaySeconds: 15
+    periodSeconds: 10
+
+ingress:
+  enabled: false
+  className: ""
+  host: ui-smb.local
+  annotations: {}
+
+serviceAccount:
+  create: true
+  name: ""
