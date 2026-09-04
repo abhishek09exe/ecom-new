@@ -39,6 +39,12 @@
     ecom_errors_total samples, since the seeded dev DB has no other easily reachable
     failure path over HTTP. Requires kubectl access to the cluster. Off by default —
     only use this if you specifically want to see the error-outcome series in Grafana.
+    Ignored when -Continuous is set (outages are not repeated every loop).
+
+.PARAMETER Continuous
+    If set, ignores -Iterations and loops the request cycles forever until you stop
+    the script (Ctrl+C). Useful for keeping the Grafana dashboard "alive" with a
+    steady trickle of traffic while you browse it.
 
 .EXAMPLE
     .\simulate-metrics.ps1
@@ -51,6 +57,10 @@
 .EXAMPLE
     .\simulate-metrics.ps1 -SimulateDbOutage -Iterations 5
     Also briefly stops SQL Server to generate real DB-error samples.
+
+.EXAMPLE
+    .\simulate-metrics.ps1 -Continuous -DelaySeconds 1
+    Runs forever, one cycle per ~4 seconds, until you press Ctrl+C.
 #>
 
 param(
@@ -58,7 +68,8 @@ param(
     [string]$MessageKey = "E151E1C7-018B-46EF-93A3-2CB7E01805C8",
     [int]$Iterations = 20,
     [double]$DelaySeconds = 0.5,
-    [switch]$SimulateDbOutage
+    [switch]$SimulateDbOutage,
+    [switch]$Continuous
 )
 
 function Invoke-Sample {
@@ -77,18 +88,10 @@ function Invoke-Sample {
     }
 }
 
-Write-Host "Simulating ecom-api traffic against $BaseUrl for $Iterations iteration(s)..." -ForegroundColor Cyan
-Write-Host "Success message_key: $MessageKey`n"
+function Invoke-Cycle {
+    param([int]$CycleNumber, [string]$CycleLabel)
 
-if ($SimulateDbOutage) {
-    Write-Host "Scaling down ecom-mssql StatefulSet in 'data' namespace to force real DB errors..." -ForegroundColor Magenta
-    kubectl scale statefulset/ecom-mssql -n data --replicas=0 | Out-Null
-    Write-Host "Waiting for SQL Server pod to terminate..."
-    kubectl wait --for=delete pod/ecom-mssql-0 -n data --timeout=60s 2>$null | Out-Null
-}
-
-for ($i = 1; $i -le $Iterations; $i++) {
-    Write-Host "--- Cycle $i/$Iterations ---"
+    Write-Host "--- Cycle $CycleLabel ---"
 
     # ── license-options: success (real message_key -> DB proc + fn call succeed) ──
     Invoke-Sample -Label "license-options success" `
@@ -112,12 +115,41 @@ for ($i = 1; $i -le $Iterations; $i++) {
     Start-Sleep -Seconds $DelaySeconds
 }
 
-if ($SimulateDbOutage) {
-    Write-Host "Restoring ecom-mssql StatefulSet to 1 replica..." -ForegroundColor Magenta
-    kubectl scale statefulset/ecom-mssql -n data --replicas=1 | Out-Null
-    kubectl rollout status statefulset/ecom-mssql -n data --timeout=120s | Out-Null
-}
+if ($Continuous) {
+    Write-Host "Simulating ecom-api traffic against $BaseUrl continuously (Ctrl+C to stop)..." -ForegroundColor Cyan
+    Write-Host "Success message_key: $MessageKey`n"
+    if ($SimulateDbOutage) {
+        Write-Host "-SimulateDbOutage is ignored in -Continuous mode (outage is not repeated every loop)." -ForegroundColor DarkYellow
+    }
 
-Write-Host "`nDone. Check the metrics with:" -ForegroundColor Cyan
-Write-Host "  curl.exe -s $BaseUrl/metrics | Select-String '^ecom_'"
-Write-Host "Or view the 'Ecom API - Overview' dashboard in Grafana."
+    $i = 0
+    while ($true) {
+        $i++
+        Invoke-Cycle -CycleNumber $i -CycleLabel "$i (continuous)"
+    }
+}
+else {
+    Write-Host "Simulating ecom-api traffic against $BaseUrl for $Iterations iteration(s)..." -ForegroundColor Cyan
+    Write-Host "Success message_key: $MessageKey`n"
+
+    if ($SimulateDbOutage) {
+        Write-Host "Scaling down ecom-mssql StatefulSet in 'data' namespace to force real DB errors..." -ForegroundColor Magenta
+        kubectl scale statefulset/ecom-mssql -n data --replicas=0 | Out-Null
+        Write-Host "Waiting for SQL Server pod to terminate..."
+        kubectl wait --for=delete pod/ecom-mssql-0 -n data --timeout=60s 2>$null | Out-Null
+    }
+
+    for ($i = 1; $i -le $Iterations; $i++) {
+        Invoke-Cycle -CycleNumber $i -CycleLabel "$i/$Iterations"
+    }
+
+    if ($SimulateDbOutage) {
+        Write-Host "Restoring ecom-mssql StatefulSet to 1 replica..." -ForegroundColor Magenta
+        kubectl scale statefulset/ecom-mssql -n data --replicas=1 | Out-Null
+        kubectl rollout status statefulset/ecom-mssql -n data --timeout=120s | Out-Null
+    }
+
+    Write-Host "`nDone. Check the metrics with:" -ForegroundColor Cyan
+    Write-Host "  curl.exe -s $BaseUrl/metrics | Select-String '^ecom_'"
+    Write-Host "Or view the 'Ecom API - Overview' dashboard in Grafana."
+}
