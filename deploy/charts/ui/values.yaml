@@ -24,6 +24,7 @@ service:
 
 # Non-secret configuration, rendered into a ConfigMap and consumed via envFrom.
 env:
+  HOSTNAME: "0.0.0.0"
   NODE_ENV: "production"
   PORT: "3000"
 
