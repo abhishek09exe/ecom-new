@@ -1,0 +1,62 @@
+{
+    "_note": "Extracted from etc/connections.dev.json — Skyrise/SkyIdentity-relevant blocks only. Do NOT copy the full connections.dev.json into this project; it contains unrelated Salesforce/AWS/other secrets. The sky_identity client_secret below is CONFIRMED DEAD (400 invalid_client on live test against https://skyidentity-qa.webrootcloudav.com/connect/token) — kept here only as a shape/field-name reference. Request a working credential from the ecom team before live testing. See doc 04, Section 10 item 11 and Section 12.1.",
+
+    "skyrise": {
+        "type": "http",
+        "adapter": "DerbySkyRise",
+        "scheme": "https",
+        "port": "443",
+        "socket": "Curl",
+        "timeout": 30,
+        "host": "skyrisesvc-qa.webrootcloudav.com",
+        "client_name": "ThundercatsQA",
+        "access_key": "ab387584-11f8-473e-a1e8-e3a4c1784661",
+        "secret_key": "vZv4bKfrZA88ZAeuAzC9JZT7Xqu5xFUWuL3-mEg4EahJ",
+        "_note": "host above is what's in connections.dev.json, but SkyRise\\Client actually derives its host from SkyRise\\Environment::HOSTS, not this field. The current dev/QA host per the SDK source is https://skyrise-qa.webrootcloudav.com (no 'svc') — see doc 04 Section 3.8. client_name/access_key/secret_key ARE genuinely used, as LegacyAuthToken credentials for signing inner createkey/createmasterkey sub-requests."
+    },
+
+    "skyrise_create": {
+        "adapter": "SkyriseCreateKeycode",
+        "type": "http",
+        "scheme": "https",
+        "port": "443",
+        "socket": "Curl",
+        "timeout": 30,
+        "host": "skyrisesvc-qa.webrootcloudav.com",
+        "client_name": "ThundercatsQA",
+        "access_key": "ab387584-11f8-473e-a1e8-e3a4c1784661",
+        "secret_key": "vZv4bKfrZA88ZAeuAzC9JZT7Xqu5xFUWuL3-mEg4EahJ",
+        "_note": "Not referenced anywhere in GenerateKeycode.php; call site not yet found. Included for completeness only."
+    },
+
+    "sky_identity": {
+        "type": "http",
+        "adapter": "DerbySkyIdentity",
+        "scheme": "https",
+        "port": "443",
+        "timeout": 30,
+        "host": "skyidentity-qa.webrootcloudav.com",
+        "client_id": "EcomConsumer",
+        "client_secret": "4ddefd26-e06f-4352-b89d-5e46d7218491",
+        "_note": "CONFIRMED DEAD via live Postman test — 400 invalid_client. This is the correct field SHAPE for SkyIdentityAuthToken's outer bulk-call auth (client_id/client_secret exchanged via POST https://skyidentity-qa.webrootcloudav.com/connect/token, grant_type=client_credentials). Needs a working value from the ecom team."
+    },
+
+    "mspregistration": {
+        "type": "http",
+        "adapter": "DerbyMSPRegistrationAPI",
+        "scheme": "https",
+        "host": "worldauth.webrootanywhere.com",
+        "version": "1.0",
+        "_note": "NOT Skyrise. This is the legacy WorldAuth MSP registration system, triggered via the sky_update queue's msp_registration template. Out of scope for the keycode-generation service itself unless told otherwise — see doc 04 Section 11."
+    },
+
+    "skyrise_sqs": {
+        "key": "REDACTED-AWS-ACCESS-KEY-ID",
+        "secret": "REDACTED-AWS-SECRET-ACCESS-KEY",
+        "queues": {
+            "us-west-2": "SkyRiseNotifications.fifo",
+            "us-east-2": "SkyRiseNotifications.fifo"
+        },
+        "_note": "AWS SQS notification channel. Producer/consumer not yet traced — unclear if this affects keycode/license lifecycle. See doc 04 Section 10 item 7. Real key/secret redacted (GitHub push protection flagged the original values as live AWS credentials) — if the real values are needed for future work, retrieve them out-of-band from the ecom team/secrets manager rather than committing them here."
+    }
+}

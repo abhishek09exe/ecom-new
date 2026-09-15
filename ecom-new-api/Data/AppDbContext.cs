@@ -59,6 +59,9 @@ public sealed class AppDbContext : DbContext
     public DbSet<LicenseProfileFunctionRow> LicenseProfileFunctionRows => Set<LicenseProfileFunctionRow>();
     public DbSet<LicenseByIdProcedureRow> LicenseByIdProcedureRows => Set<LicenseByIdProcedureRow>();
 
+    // ── Skyrise audit tables ─────────────────────────────────────────────────────
+    public DbSet<SkyriseFailure> SkyriseFailure => Set<SkyriseFailure>();
+
     // ── Product tables ──────────────────────────────────────────────────────────
     public DbSet<Product> Product => Set<Product>();
     public DbSet<ProductFamily> ProductFamily => Set<ProductFamily>();
