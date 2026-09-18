@@ -18,7 +18,7 @@ spec:
     - host: {{ .Values.ingress.host }}
       http:
         paths:
-          - path: /
+          - path: /ecom-api
             pathType: Prefix
             backend:
               service:
