@@ -4,9 +4,12 @@ using ecom_new_api.Repositories.Cart;
 using ecom_new_api.Repositories.LicenseOptions;
 using ecom_new_api.Repositories.Pricing;
 using ecom_new_api.Repositories.Skyrise;
+using ecom_new_api.Repositories.Trials;
 using ecom_new_api.Services;
 using ecom_new_api.Services.CartOrders;
+using ecom_new_api.Services.EmailVerification;
 using ecom_new_api.Services.LicenseOptions;
+using ecom_new_api.Services.MultiTrial;
 using ecom_new_api.Services.Pricing;
 using ecom_new_api.Services.Skyrise;
 using Microsoft.EntityFrameworkCore;
@@ -59,6 +62,7 @@ builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
 builder.Services.AddScoped<ILicenseOptionsRepository, LicenseOptionsRepository>();
 builder.Services.AddScoped<IPricingRepository, PricingRepository>();
 builder.Services.AddScoped<ISkyriseFailureRepository, SkyriseFailureRepository>();
+builder.Services.AddScoped<ITrialRegistrationRepository, TrialRegistrationRepository>();
 
 // ── Services ────────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderService, CartOrderService>();
@@ -66,6 +70,9 @@ builder.Services.AddScoped<CurrencyService>();
 builder.Services.AddScoped<MessageKeyService>();
 builder.Services.AddScoped<IPricingService, PricingService>();
 builder.Services.AddScoped<ILicenseOptionsService, LicenseOptionsService>();
+builder.Services.AddScoped<IMultiTrialSubmissionService, MultiTrialSubmissionService>();
+builder.Services.Configure<WebbulaOptions>(builder.Configuration.GetSection(WebbulaOptions.SectionName));
+builder.Services.AddHttpClient<IEmailVerificationService, WebbulaEmailVerificationService>();
 
 // ── Skyrise keycode generation (internal service, not yet exposed via a controller) ─────────────
 // Real QA credentials belong in appsettings.Development.json (gitignored) or user-secrets, never
