@@ -1,7 +1,8 @@
 # Skyrise Keycode Generation Service — Implementation Summary
 
 > Status: internal service implemented, not yet wired into the trial-creation flow.
-> SkyIdentity OAuth2 token exchange **confirmed working live against QA** (2024 update).
+> Full live flow (SkyIdentity auth + Skyrise bulk keycode request) **confirmed working
+> end-to-end against QA** — see Update 9 in Section 6.
 > Branch: `feature/skyrise-keycode`
 
 ## 1. What This Is
@@ -34,7 +35,7 @@ ecom-new-api/
 │   ├── ISkyriseFailureRepository.cs
 │   └── SkyriseFailureRepository.cs — persists SkyriseFailure audit rows via EF Core
 ├── Data/Entities/
-│   └── SkyriseFailure.cs           — audit entity (skyrise_license_failure table, confirmed via QA DB)
+│   └── SkyriseFailure.cs           — audit entity (dbo.skyrise_license_failure table, confirmed via QA DB)
 ├── Data/AppDbContext.cs            — + DbSet<SkyriseFailure>
 ├── Program.cs                      — DI registrations, options binding, typed HttpClients
 ├── appsettings.json                — empty placeholder Skyrise/SkyIdentity config sections
@@ -84,7 +85,7 @@ ISkyriseKeycodeClient.GenerateAsync(request)
 	│
 	└─▶ On any failure (bad category, HTTP error, exception, missing licenseKey)
 		   → ISkyriseFailureRepository.RecordFailureAsync(requestJson, failureMessageJson)
-				→ EF Core insert into skyrise_failure (audit trail, never throws back to caller)
+				→ EF Core insert into dbo.skyrise_license_failure (audit trail, never throws back to caller)
 		   → KeycodeResult.Failed(errorMessage)
 ```
 
@@ -104,7 +105,7 @@ Both are required for a real call to succeed — this mirrors the PHP `GenerateK
 category, HTTP error, malformed response, network exception). Every failure path:
 1. Serializes the original request + attempted bulk payload as `skyrise_request`.
 2. Serializes the error message as `skyrise_failure_message`.
-3. Writes both to `skyrise_failure` via `SkyriseFailureRepository` (itself wrapped in
+3. Writes both to `dbo.skyrise_license_failure` via `SkyriseFailureRepository` (itself wrapped in
    try/catch so a DB problem during audit-logging can't blow up the caller either).
 4. Returns `KeycodeResult.Failed(...)` so the caller can proceed with the DB-side fallback.
 
@@ -128,39 +129,41 @@ category, HTTP error, malformed response, network exception). Every failure path
 ```json
 "SkyIdentity": {
   "TokenUrl": "https://skyidentity-qa.webrootcloudav.com/connect/token",
-  "ClientId": "EcomConsumer",
-  "ClientSecret": "4ddefd26-e06f-4352-b89d-5e46d7218491"   // CONFIRMED WORKING — successfully returns an access token (previously misdiagnosed as dead due to testing with an incorrect secret value)
+  "ClientId": "SkyUberAPI",
+  "ClientSecret": "sSxbjRBFx$tBrtm3F7q%wZsPTDmHsG"   // Second candidate tried (replaced EcomConsumer) — ALSO WRONGLY SCOPED (see item 3, Update 5): JWT aud=Services.Sky.SkyUber, scope=SkyUber.ConsoleScope — not the bulk keycode API. Still need the correct client_id/secret for /api/v1/bulk.
 },
 "Skyrise": {
   "BaseUrl": "https://skyrise-qa.webrootcloudav.com",
   "ClientName": "ThundercatsQA",
   "AccessKey": "ab387584-11f8-473e-a1e8-e3a4c1784661",
-  "SecretKey": "vZv4bKfrZA88ZAeuAzC9JZT7Xqu5xFUWuL3-mEg4EahJ"  // not yet live-tested
+  "SecretKey": "vZv4bKfrZA88ZAeuAzC9JZT7Xqu5xFUWuL3-mEg4EahJ"  // signing algorithm confirmed correct against
+                                                              // live QA (see follow-up #3, Update 4); not the
+                                                              // cause of the 401 — the blocker is the SkyIdentity
+                                                              // (EcomConsumer) token's scope, not this credential
 }
 ```
 
 ## 5. Follow-Up Requirements
 
-1. **Create the `skyrise_failure` table in the QA database.** This project has no EF Core
-   migrations mechanism (schema is managed outside EF Core), so the table must be created
-   manually. Suggested columns:
-   - `skyrise_failure_id` (int, PK, identity)
-   - `skyrise_request` (nvarchar(max)/json)
-   - `skyrise_failure_message` (nvarchar(max)/json)
-   - `insert_date` (datetime)
+1. ~~Create the `skyrise_failure` table in the QA database.~~ **RESOLVED — see item 5d below.**
+   The table already exists in QA under the name `dbo.skyrise_license_failure` (not
+   `skyrise_failure`); no manual DDL was needed. `SkyriseFailure.cs`/`SkyriseFailureRepository.cs`
+   are already mapped to it.
 
-2. ~~Get a working `sky_identity` credential from the ecom team.~~ **RESOLVED** — the
-   `EcomConsumer` / `4ddefd26-e06f-4352-b89d-5e46d7218491` credential is confirmed working
-   and successfully returns an access token from SkyIdentity. The earlier "dead credential"
-   finding was a misdiagnosis (an incorrect secret value was used during that test, not this
-   one). No further action needed here — proceed to live-testing the full bulk keycode call.
+2. ~~Get a working `sky_identity` credential from the ecom team.~~ **PARTIALLY RESOLVED —
+   see item 3 below for the full picture.** The `EcomConsumer` / `4ddefd26-e06f-4352-b89d-5e46d7218491`
+   credential is confirmed *alive* — it successfully exchanges for a SkyIdentity access token (the
+   earlier "dead credential" finding was a misdiagnosis caused by testing with an incorrect secret
+   value, not this one). **However, this does not mean the credential is usable for the bulk
+   keycode API** — decoding its JWT shows it is scoped only for `Services.Consumer.AccountMgmt`,
+   not `/api/v1/bulk` (see item 3). A different, correctly-scoped SkyIdentity client is still
+   needed before this flow can succeed end-to-end.
 
-3. **Live-test the `skyrise` (LegacyAuthToken) credentials end-to-end.** `ThundercatsQA` / the
-   access/secret key pair have not yet been tested against a real Skyrise call — only the
-   signing algorithm itself has been verified against the documented spec. Now that the outer
-   SkyIdentity token exchange is confirmed working, this is the next real blocker to validate:
-   run a full `GenerateAsync` call against QA and confirm the inner `createkey`/`createmasterkey`
-   sub-request is accepted.
+3. **Live-test the full bulk keycode call end-to-end.** *(Originally scoped as "test the
+   `ThundercatsQA` LegacyAuthToken credentials" — that turned out not to be the blocker; see
+   below.)* Now that the outer SkyIdentity token exchange is confirmed working, the next step was
+   to run a full `GenerateAsync` call against QA and confirm the inner `createkey`/
+   `createmasterkey` sub-request is accepted.
 
    **UPDATE — live-tested, currently failing with `401 Unauthorized`.** Running
    `SkyriseKeycodeClientLiveTests` (see Section 6 below) against real QA endpoints confirms the
@@ -243,16 +246,68 @@ category, HTTP error, malformed response, network exception). Every failure path
    thunder something") — confirmed correct, now with hard evidence (the JWT claims themselves)
    rather than a hunch.
 
-   **Next action (blocking, not something we can fix in code): get the correct SkyIdentity
-   client_id/client_secret pair that is actually scoped/authorized for `/api/v1/bulk` from the
-   ecom/Skyrise team.** Whatever `GenerateKeycode.php`'s production `Connections::get('skyrise')`
-   config resolves to at runtime is the authoritative source of truth for which SkyIdentity client
-   PHP actually uses for this flow — `EcomConsumer` may simply be the wrong client for this
-   specific service, unrelated to whether it's "dead" (it's alive, just wrongly scoped). Once a
-   correctly-scoped client_id/secret is obtained, swap it into `SkyIdentity:ClientId`/
-   `SkyIdentity:ClientSecret` in `appsettings.Development.json` and rerun
-   `SkyriseKeycodeClientLiveTests` — expect either a 200-with-license-key or a different,
-   more specific error at that point.
+   **UPDATE 6 — LIKELY ROOT CAUSE OF WRONG-SCOPE CREDENTIALS FOUND: we've been asking for/testing
+   the wrong connection block entirely.** Re-read `GenerateKeycode.php`'s actual PHP call sites
+   (`save()` and the `finder('first', ...)` callback) line-by-line:
+   ```php
+   $conf = Connections::get('skyrise', ['config' => true]);
+   $client = new Client(...);
+   $token = SkyIdentityAuthToken::createFromCredentials($client, $conf['client_id'], $conf['client_secret']);
+   ```
+   **PHP pulls the SkyIdentity `client_id`/`client_secret` from the `skyrise` connection block —
+   not the separate `sky_identity` block.** This happens in two independent places in the source
+   (confirmed not a one-off), so it's the authoritative, unambiguous behavior.
+
+   But `Project_Info/skyrise-service-reference/config/skyrise-connections-reference.json`'s
+   `skyrise` block only contains `client_name`/`access_key`/`secret_key` (the LegacyAuthToken
+   inner-request fields) — **no `client_id`/`client_secret` at all**. That means the reference
+   extraction is incomplete: the real `skyrise` connection in production/QA's
+   `connections.dev.json` almost certainly has `client_id`/`client_secret` fields that were never
+   copied into our reference file. The separate `sky_identity` block we've been testing against
+   (and the unrelated `SkyUberAPI` credential from Update 5) are a **different connection entirely**
+   — notably, the reference file's own `_note` on `sky_identity` admits it was "CONFIRMED DEAD...
+   kept here only as a shape/field-name reference," meaning whoever wrote that reference file
+   wasn't confident it was even the right credential set for this flow.
+
+   **Revised ask for the ecom team: request the `client_id`/`client_secret` specifically from the
+   `skyrise` connection block** (the same one that already supplies `client_name`/`access_key`/
+   `secret_key` for the LegacyAuthToken signing) in `connections.dev.json` (or its QA/production
+   equivalent) — not another arbitrary SkyIdentity client. This is a precise, source-code-backed
+   request and should avoid a third wrongly-scoped credential.
+
+   **UPDATE 7 — re-confirmed `SkyUberAPI` is a dead end, even under a different config key name.**
+   The same `SkyUberAPI`/`sSxbjRBFx$tBrtm3F7q%wZsPTDmHsG` pair also appears in the reference config
+   under a `sky_identity_token` key. Re-exchanged and decoded it again to be certain: **identical
+   JWT** (`aud: Services.Sky.SkyUber`, `scope: [SkyUber.ConsoleScope]`). This confirms scope is tied
+   to the credential itself on SkyIdentity's server, not to whatever local config key name we store
+   it under — renaming/reusing it under a different key (e.g. pretending it's the `skyrise`
+   connection's `client_id`/`client_secret`) cannot change what the server has it registered for.
+   Two credentials now conclusively ruled out (`EcomConsumer`, `SkyUberAPI`); still need the actual
+   `client_id`/`client_secret` genuinely stored on the `skyrise` connection per Update 6.
+
+   **UPDATE 5 — new SkyIdentity credential obtained (`SkyUberAPI`), swapped in, live-tested —
+   STILL WRONGLY SCOPED, 401 PERSISTS.** Sourced from the reference connections config under the
+   `sky_identity_token` key (`client_id: SkyUberAPI`). Updated `appsettings.Development.json`'s
+   `SkyIdentity:ClientId`/`SkyIdentity:ClientSecret` to this new pair and reran
+   `SkyriseKeycodeClientLiveTests`: **identical result** — `Success=False`,
+   `ErrorMessage=Skyrise bulk call returned 401`.
+
+   Decoded the new JWT (token exchange itself succeeds):
+   ```json
+   {
+     "aud": "Services.Sky.SkyUber",
+     "scope": ["SkyUber.ConsoleScope"],
+     "client_id": "SkyUberAPI"
+   }
+   ```
+   `SkyUberAPI` is scoped for the **Sky Uber console** (`Services.Sky.SkyUber` /
+   `SkyUber.ConsoleScope`) — a different wrong service, not the bulk keycode API either. This is
+   the same class of problem as `EcomConsumer` (Update 4): the credential is alive and exchanges
+   successfully, but its audience/scope has nothing to do with `/api/v1/bulk`. Two wrongly-scoped
+   clients down; still need the specific SkyIdentity client that PHP's production
+   `Connections::get('skyrise')` actually resolves to for this exact flow — **do not accept any
+   new candidate credential without decoding its JWT first and confirming its `aud`/`scope`
+   plausibly cover the bulk keycode/license API**, per this and Update 4's experience.
 
 4. **Confirm the Skyrise API's actual error/response shape.** The client's `ExtractLicenseKey`
    does a best-effort recursive search for a `licenseKey` property; the real API's success/error
@@ -346,8 +401,10 @@ category, HTTP error, malformed response, network exception). Every failure path
      debugging our current 401 (item #3 below) — a shape mismatch could plausibly surface as an
      auth-layer rejection depending on how the API validates requests.
    This does not directly explain the 401 seen in our own live test (different category, different
-   error code), but reinforces that the next debugging step should be to capture the *exact* raw
-   request/response bytes for our own bulk call, not just assume it's a credential problem.
+   error code) — that 401 was root-caused separately in item 3 (Update 4) to a SkyIdentity
+   client-scope mismatch, not a shape issue. This item is kept only as a reminder that the bulk
+   envelope shape has its own independent gotchas (e.g. `updateModel`, epoch `startDate`/`endDate`)
+   worth re-checking once a correctly-scoped credential is available and testing resumes.
 
 5e. **NEW — QA keycode-modification marker confirmed.** `environment` table shows
    `environment_type='QA'`, `keycode_modification_string='ZZZZ'` — any keycode generated by the
@@ -405,10 +462,45 @@ category, HTTP error, malformed response, network exception). Every failure path
 - **`ecom-new-api.Tests/Services/Skyrise/SkyriseKeycodeClientLiveTests.cs`** — opt-in integration
   test that calls the real QA SkyIdentity + Skyrise endpoints end-to-end. Disabled by default
   (returns immediately unless `SKYRISE_LIVE_TEST=1` is set), so it never affects normal
-  `dotnet test`/CI runs. Run manually with:
+  `dotnet test`/CI runs. **Important:** this test does *not* read `appsettings.Development.json`
+  — it builds its own `SkyIdentityOptions`/`SkyriseOptions` and falls back to the (now-stale)
+  `EcomConsumer` credential if the client id/secret env vars aren't set. Always pass them
+  explicitly:
   ```powershell
   $env:SKYRISE_LIVE_TEST = "1"
+  $env:SKYRISE_CLIENT_ID = "EcomQASkyRise"
+  $env:SKYRISE_CLIENT_SECRET = "<secret>"
   dotnet test --filter FullyQualifiedName~SkyriseKeycodeClientLiveTests --logger "console;verbosity=detailed"
   ```
-  Last live run result (see follow-up #3 above): `Success=False`, `ErrorMessage=Skyrise bulk call
-  returned 401`. The SkyIdentity token exchange succeeded; the bulk call itself was rejected.
+
+### Update 9 — Live flow fully working end-to-end (resolved)
+
+The `EcomQASkyRise` SkyIdentity client (obtained from the team) is correctly scoped: its JWT
+has `aud: [Services.Sky.SkyRise, Services.Sky.S2]` and scopes including
+`Services.SkyRise.CanBulkCreateLicenses`/`CanCreateLicenses`/`CanCreateMasterLicenses`. With
+this credential (set via `appsettings.Development.json` for the app, and via the env vars above
+for the live test), the outer `401` is resolved. Two further request-shape issues, not visible
+in the PHP SDK reference (the live API has evolved past it), were found and fixed by trial
+against the real QA endpoint:
+
+1. **Bulk item `body` must be a nested JSON *object*, not a JSON-encoded string.** The legacy
+   PHP `toBulk()` shape serializes `body` as a string. The live endpoint instead deserializes
+   `body` directly into a model type (`Services.Sky.SkyRise.Models.CreateKeyIntentRequestModel`)
+   and requires the properties bound directly — no `model` wrapper needed. Fixed in
+   `SkyriseKeycodeClient.GenerateAsync` by sending `innerBody` (a `Dictionary<string, string>`)
+   directly as the `body` property's value instead of calling `JsonSerializer.Serialize` on it
+   first.
+2. **Success response shape is `{"CreateKey": "<keycode>"}`** (for `createkey`; presumably
+   `{"CreateMasterKey": "..."}` for `createmasterkey`), not `{"licenseKey": "..."}` as assumed
+   from the PHP SDK's `response\License` class. Fixed `TryFindLicenseKey` in
+   `SkyriseKeycodeClient.cs` to recognize `CreateKey`/`CreateMasterKey` (in addition to
+   `licenseKey` for forward-compat), and to recurse into the bulk envelope's `content` field
+   (which is itself a JSON-encoded string) when looking for the keycode.
+
+**Final live result:** `Success=True, Keycode=FEC2TEST50639A0B453B` (test credential, `TEST`
+`LicenseDistCode`, QA environment). Full solution test suite (95 tests) passes, including this
+live test when opted in.
+
+**Remaining follow-up:** consider having the live test load `appsettings.Development.json`
+directly instead of hardcoding defaults, to avoid the silent-`EcomConsumer`-fallback trap that
+caused earlier confusion.

@@ -109,7 +109,16 @@ public sealed class SkyriseKeycodeClient : ISkyriseKeycodeClient
             // bulk-item property). PHP: `$data = $tok->getRequestData() + $data;` where
             // getRequestData() returns ['RequestToken' => $this->_getRequestToken()].
             innerBody["RequestToken"] = _signer.GetRequestToken(actionName);
-            var innerBodyJson = JsonSerializer.Serialize(innerBody, JsonOptions);
+
+            // LIVE API FINDING: sending "body" as a JSON-encoded STRING (the PHP/legacy shape)
+            // produces "The model field is required." on the live endpoint, whose model type
+            // (Services.Sky.SkyRise.Models.CreateKeyIntentRequestModel) doesn't exist in the PHP
+            // SDK at all -- this is a newer API surface. "body" must be a nested JSON OBJECT (not
+            // a string). Once sent as an object, the live endpoint bound the fields directly
+            // (Seats/Storage/LicenseTypeId/etc. "field is required" errors referenced the
+            // individual properties, not a wrapping "model" property) -- so no "model" wrapper is
+            // needed; send innerBody directly as the object.
+            object innerBodyValue = innerBody;
 
             // CONFIRMED against php/skyrise-sdk/Request.php::toBulk(): the bulk-item envelope is
             // { method, bulkId, path, headers, body } and "headers" is only for CUSTOM headers
@@ -121,7 +130,7 @@ public sealed class SkyriseKeycodeClient : ISkyriseKeycodeClient
                 method = "POST",
                 bulkId = Guid.NewGuid().ToString(),
                 path,
-                body = innerBodyJson,
+                body = innerBodyValue,
             };
 
             var accessToken = await _tokenProvider.GetAccessTokenAsync(ct);
@@ -201,7 +210,9 @@ public sealed class SkyriseKeycodeClient : ISkyriseKeycodeClient
             case JsonValueKind.Object:
                 foreach (var property in element.EnumerateObject())
                 {
-                    if (string.Equals(property.Name, "licenseKey", StringComparison.OrdinalIgnoreCase) &&
+                    if ((string.Equals(property.Name, "licenseKey", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(property.Name, "CreateKey", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(property.Name, "CreateMasterKey", StringComparison.OrdinalIgnoreCase)) &&
                         property.Value.ValueKind == JsonValueKind.String &&
                         !string.IsNullOrWhiteSpace(property.Value.GetString()))
                     {
@@ -218,6 +229,24 @@ public sealed class SkyriseKeycodeClient : ISkyriseKeycodeClient
                 {
                     if (TryFindLicenseKey(item, out licenseKey))
                         return true;
+                }
+                break;
+            case JsonValueKind.String:
+                // The bulk envelope's per-item "content" field is itself a JSON-encoded string
+                // (e.g. "{\"CreateKey\":\"...\"}"), not a nested object — recurse into it if it
+                // parses as JSON.
+                var raw = element.GetString();
+                if (!string.IsNullOrEmpty(raw) && raw.Length > 1 && raw[0] == '{')
+                {
+                    try
+                    {
+                        using var nested = JsonDocument.Parse(raw);
+                        if (TryFindLicenseKey(nested.RootElement, out licenseKey)) return true;
+                    }
+                    catch (JsonException)
+                    {
+                        // Not JSON after all — ignore.
+                    }
                 }
                 break;
         }
