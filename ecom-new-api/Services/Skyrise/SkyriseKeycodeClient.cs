@@ -1,6 +1,5 @@
 using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using ecom_new_api.Repositories.Skyrise;
 using Microsoft.Extensions.Options;
 
@@ -50,20 +49,19 @@ public sealed class SkyriseKeycodeClient : ISkyriseKeycodeClient
 
     public async Task<KeycodeResult> GenerateAsync(KeycodeRequest request, CancellationToken ct = default)
     {
-        object? bulkPayload = null;
         try
         {
             var matrixEntry = _productMatrix.GetProductMatrixEntry(request.LicenseCategory);
             if (matrixEntry is null)
             {
-                return await FailAsync(request, $"No PRODUCT_MATRIX entry found for license category '{request.LicenseCategory}'.", ct);
+                return await FailAsync(request, "product_matrix_missing", ct);
             }
 
             var licenseType = request.LicenseType ?? matrixEntry.LicenseType;
             var licenseTypeId = _productMatrix.GetLicenseTypeId(licenseType);
             if (licenseTypeId is null)
             {
-                return await FailAsync(request, $"No LICENSE_TYPE_ID_MAP entry found for license type '{licenseType}'.", ct);
+                return await FailAsync(request, "license_type_id_map_missing", ct);
             }
 
             // LicenseKeycodeTypeId == 3 => template/master key, else a regular key (Section 3.1/3.8).
@@ -126,59 +124,73 @@ public sealed class SkyriseKeycodeClient : ISkyriseKeycodeClient
                 body = innerBodyJson,
             };
 
-            bulkPayload = new[] { bulkItem };
-
             var accessToken = await _tokenProvider.GetAccessTokenAsync(ct);
 
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{_options.BaseUrl.TrimEnd('/')}/api/v1/bulk")
             {
-                Content = JsonContent.Create(bulkPayload, options: JsonOptions),
+                Content = JsonContent.Create(new[] { bulkItem }, options: JsonOptions),
             };
             httpRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
 
 
             using var response = await _httpClient.SendAsync(httpRequest, ct);
             var responseBody = await response.Content.ReadAsStringAsync(ct);
-
-            if (!response.IsSuccessStatusCode)
+            var bodyEmpty = string.IsNullOrWhiteSpace(responseBody);
+            JsonDocument? responseDocument = null;
+            if (!bodyEmpty)
             {
-                return await FailAsync(request, $"Skyrise bulk call returned {(int)response.StatusCode}: {responseBody}", ct, bulkPayload);
+                try
+                {
+                    responseDocument = JsonDocument.Parse(responseBody);
+                }
+                catch (JsonException)
+                {
+                }
             }
 
-            var licenseKey = ExtractLicenseKey(responseBody);
-            if (licenseKey is null)
+            using (responseDocument)
             {
-                return await FailAsync(request, $"Skyrise bulk response did not contain a license key: {responseBody}", ct, bulkPayload);
-            }
+                var jsonShape = responseDocument is null
+                    ? bodyEmpty ? "empty" : "invalid-json"
+                    : DescribeJsonShape(responseDocument.RootElement);
+                var apiErrors = responseDocument is null
+                    ? null
+                    : DescribeApiErrors(responseDocument.RootElement);
 
-            return KeycodeResult.Ok(licenseKey);
+                _logger.LogInformation(
+                    "Skyrise HTTP response diagnostics: HttpStatusCode={HttpStatusCode} ContentType={ContentType} BodyEmpty={BodyEmpty} JsonProperties={JsonProperties} ApiErrors={ApiErrors}",
+                    (int)response.StatusCode,
+                    response.Content.Headers.ContentType?.ToString() ?? "missing",
+                    bodyEmpty,
+                    jsonShape,
+                    apiErrors ?? "none");
+
+                if (!response.IsSuccessStatusCode)
+                    return await FailAsync(request, $"skyrise_http_{(int)response.StatusCode}", ct);
+
+                if (bodyEmpty)
+                    return await FailAsync(request, "skyrise_response_empty_body", ct);
+
+                if (responseDocument is null)
+                    return await FailAsync(request, "skyrise_response_invalid_json", ct);
+
+                if (apiErrors is not null)
+                    return await FailAsync(request, "skyrise_api_error", ct);
+
+                if (!TryFindLicenseKey(responseDocument.RootElement, out var licenseKey))
+                    return await FailAsync(request, "skyrise_response_missing_license_key", ct);
+
+                return KeycodeResult.Ok(licenseKey!);
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Skyrise keycode generation failed for license category {LicenseCategory}.", request.LicenseCategory);
-            return await FailAsync(request, ex.Message, ct, bulkPayload);
+            _logger.LogError(
+                "Skyrise keycode generation failed. FailureCategory={FailureCategory}; ExceptionType={ExceptionType}",
+                "skyrise_request_failed",
+                ex.GetType().Name);
+            return await FailAsync(request, "skyrise_request_failed", ct);
         }
-    }
-
-    private static string? ExtractLicenseKey(string responseBody)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(responseBody);
-            // Response shape from the live Skyrise API error/response taxonomy is not fully confirmed
-            // (see doc item 3) — this best-effort extraction looks for a top-level or nested
-            // "licenseKey" property, matching SkyRise\response\License::licenseKey.
-            if (TryFindLicenseKey(doc.RootElement, out var key))
-            {
-                return key;
-            }
-        }
-        catch (JsonException)
-        {
-            // Not JSON, or unexpected shape — treated as failure by the caller.
-        }
-
-        return null;
     }
 
     private static bool TryFindLicenseKey(JsonElement element, out string? licenseKey)
@@ -187,31 +199,183 @@ public sealed class SkyriseKeycodeClient : ISkyriseKeycodeClient
         switch (element.ValueKind)
         {
             case JsonValueKind.Object:
-                foreach (var prop in element.EnumerateObject())
+                foreach (var property in element.EnumerateObject())
                 {
-                    if (string.Equals(prop.Name, "licenseKey", StringComparison.OrdinalIgnoreCase) && prop.Value.ValueKind == JsonValueKind.String)
+                    if (string.Equals(property.Name, "licenseKey", StringComparison.OrdinalIgnoreCase) &&
+                        property.Value.ValueKind == JsonValueKind.String &&
+                        !string.IsNullOrWhiteSpace(property.Value.GetString()))
                     {
-                        licenseKey = prop.Value.GetString();
+                        licenseKey = property.Value.GetString();
                         return true;
                     }
-                    if (TryFindLicenseKey(prop.Value, out licenseKey)) return true;
+
+                    if (TryFindLicenseKey(property.Value, out licenseKey))
+                        return true;
                 }
                 break;
             case JsonValueKind.Array:
                 foreach (var item in element.EnumerateArray())
                 {
-                    if (TryFindLicenseKey(item, out licenseKey)) return true;
+                    if (TryFindLicenseKey(item, out licenseKey))
+                        return true;
                 }
                 break;
         }
+
         return false;
     }
 
-    private async Task<KeycodeResult> FailAsync(KeycodeRequest request, string errorMessage, CancellationToken ct, object? bulkPayload = null)
+    private static string DescribeJsonShape(JsonElement root)
     {
-        var requestJson = JsonSerializer.Serialize(new { request, bulkPayload }, JsonOptions);
-        var failureMessageJson = JsonSerializer.Serialize(new { error = errorMessage }, JsonOptions);
+        const int maximumEntries = 48;
+        var entries = new List<string>();
+        AppendJsonShape(root, "$", 0, entries, maximumEntries);
+        return string.Join(",", entries);
+    }
+
+    private static void AppendJsonShape(
+        JsonElement element,
+        string path,
+        int depth,
+        List<string> entries,
+        int maximumEntries)
+    {
+        if (entries.Count >= maximumEntries)
+            return;
+
+        if (depth > 8)
+        {
+            entries.Add($"{path}:DepthLimit");
+            return;
+        }
+
+        entries.Add($"{path}:{element.ValueKind}");
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    var childPath = $"{path}.{SanitizePropertyName(property.Name)}";
+                    AppendJsonShape(property.Value, childPath, depth + 1, entries, maximumEntries);
+                }
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray().Take(8))
+                {
+                    AppendJsonShape(item, $"{path}[]", depth + 1, entries, maximumEntries);
+                }
+                break;
+        }
+    }
+
+    private static string SanitizePropertyName(string propertyName)
+    {
+        var safeName = new string(propertyName.Take(48)
+            .Select(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-' or '.'
+                ? character
+                : '_')
+            .ToArray());
+        return string.IsNullOrEmpty(safeName) ? "[empty]" : safeName;
+    }
+
+    private static string? DescribeApiErrors(JsonElement root)
+    {
+        var descriptions = new List<string>();
+        FindApiErrors(root, descriptions, 0);
+        return descriptions.Count == 0 ? null : string.Join(";", descriptions.Take(4));
+    }
+
+    private static void FindApiErrors(JsonElement element, List<string> descriptions, int depth)
+    {
+        if (depth > 8 || descriptions.Count >= 4 || element.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array))
+            return;
+
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if ((string.Equals(property.Name, "errors", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(property.Name, "error", StringComparison.OrdinalIgnoreCase)) &&
+                    HasMeaningfulValue(property.Value))
+                {
+                    descriptions.Add($"{SanitizePropertyName(property.Name)}:{DescribeErrorValue(property.Value)}");
+                }
+
+                FindApiErrors(property.Value, descriptions, depth + 1);
+            }
+        }
+        else
+        {
+            foreach (var item in element.EnumerateArray().Take(8))
+                FindApiErrors(item, descriptions, depth + 1);
+        }
+    }
+
+    private static bool HasMeaningfulValue(JsonElement value)
+        => value.ValueKind switch
+        {
+            JsonValueKind.Null or JsonValueKind.Undefined => false,
+            JsonValueKind.String => !string.IsNullOrWhiteSpace(value.GetString()),
+            JsonValueKind.Array => value.GetArrayLength() > 0,
+            JsonValueKind.Object => value.EnumerateObject().Any(),
+            JsonValueKind.False => false,
+            _ => true
+        };
+
+    private static string DescribeErrorValue(JsonElement value)
+    {
+        var fields = new List<string>();
+        AppendErrorFieldSummary(value, fields, 0);
+        return fields.Count == 0
+            ? $"{value.ValueKind}:[redacted]"
+            : $"{value.ValueKind}({string.Join(",", fields.Take(8))})";
+    }
+
+    private static void AppendErrorFieldSummary(JsonElement element, List<string> fields, int depth)
+    {
+        if (depth > 8 || fields.Count >= 8)
+            return;
+
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                var isCode = property.Name.Equals("code", StringComparison.OrdinalIgnoreCase) ||
+                             property.Name.Equals("errorCode", StringComparison.OrdinalIgnoreCase) ||
+                             property.Name.Equals("error_code", StringComparison.OrdinalIgnoreCase);
+                var isMessage = property.Name.Equals("message", StringComparison.OrdinalIgnoreCase) ||
+                                property.Name.Equals("errorMessage", StringComparison.OrdinalIgnoreCase) ||
+                                property.Name.Equals("error_message", StringComparison.OrdinalIgnoreCase);
+                if (isCode || isMessage)
+                {
+                    var label = isCode ? "code" : "message";
+                    var length = property.Value.ValueKind == JsonValueKind.String
+                        ? property.Value.GetString()?.Length ?? 0
+                        : 0;
+                    fields.Add($"{label}:{property.Value.ValueKind}=[redacted,length={length}]");
+                }
+                else
+                {
+                    AppendErrorFieldSummary(property.Value, fields, depth + 1);
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray().Take(4))
+                AppendErrorFieldSummary(item, fields, depth + 1);
+        }
+        else if (element.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(element.GetString()))
+        {
+            fields.Add($"message:String=[redacted,length={element.GetString()!.Length}]");
+        }
+    }
+
+    private async Task<KeycodeResult> FailAsync(KeycodeRequest request, string errorCategory, CancellationToken ct)
+    {
+        var requestJson = JsonSerializer.Serialize(new { licenseCategory = request.LicenseCategory }, JsonOptions);
+        var failureMessageJson = JsonSerializer.Serialize(new { category = errorCategory }, JsonOptions);
         await _failureRepository.RecordFailureAsync(requestJson, failureMessageJson, ct);
-        return KeycodeResult.Failed(errorMessage);
+        return KeycodeResult.Failed(errorCategory);
     }
 }

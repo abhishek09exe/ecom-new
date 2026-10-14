@@ -540,6 +540,7 @@ public sealed class LicenseOptionsRepository : ILicenseOptionsRepository
 
         return new LicenseOptionsResponse
         {
+            LicenseId = license.LicenseId,
             Keycode = license.Keycode,
             LicenseVerified = true,
             LicenseKey = license.LicenseKeyGuid?.ToString("D"),

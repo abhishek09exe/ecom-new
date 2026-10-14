@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace ecom_new_api.Models.Requests;
 
 /// <summary>
@@ -71,6 +73,7 @@ public sealed class MultiTrialSubmissionRequest
     public string? LicenseCategoryName { get; init; }
 
     /// <summary>Seat count for the primary product.</summary>
+    [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
     public int LicenseSeats { get; init; }
 
     /// <summary>Trial duration in days. Legacy default is 30.</summary>
@@ -90,7 +93,7 @@ public sealed class MultiTrialSubmissionRequest
 
     // ── Secondary modules ──────────────────────────────────────────────────────
 
-    /// <summary>Selected secondary products (SDNS, SECA, OTEDR, OTMDR, …). Become item_hierarchy_id = 2.</summary>
+    /// <summary>Selected secondary products. Become item_hierarchy_id = 2.</summary>
     public List<MultiTrialModuleRequest> Modules { get; init; } = [];
 
     // ── Form metadata ──────────────────────────────────────────────────────────

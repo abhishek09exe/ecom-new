@@ -35,11 +35,20 @@ public sealed class License
     public int? LicenseKeycodeTypeId { get; set; }
 
     [Column("max_daily_activations")]
-    public int? MaxDailyActivations { get; set; }
+    public int MaxDailyActivations { get; set; }
 
-    [Column("license_expiration_date")]
+    [Column("license_expiration_date", TypeName = "datetime")]
     public DateTime? LicenseExpirationDate { get; set; }
 
-    [Column("insert_date")]
-    public DateTime? InsertDate { get; set; }
+    [Column("insert_date", TypeName = "datetime")]
+    public DateTime InsertDate { get; set; }
+
+    [Column("insert_by"), MaxLength(50), Unicode(false)]
+    public string InsertBy { get; set; } = string.Empty;
+
+    [Column("modified_date", TypeName = "datetime")]
+    public DateTime ModifiedDate { get; set; }
+
+    [Column("modified_by"), MaxLength(50), Unicode(false)]
+    public string ModifiedBy { get; set; } = string.Empty;
 }

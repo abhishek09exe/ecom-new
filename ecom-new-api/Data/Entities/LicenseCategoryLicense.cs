@@ -17,9 +17,15 @@ public sealed class LicenseCategoryLicense
     [Column("license_category_id")]
     public byte LicenseCategoryId { get; set; }
 
-    [Column("start_date")]
+    [Column("start_date", TypeName = "datetime")]
     public DateTime? StartDate { get; set; }
 
-    [Column("end_date")]
+    [Column("end_date", TypeName = "datetime")]
     public DateTime? EndDate { get; set; }
+
+    [Column("last_modified_date", TypeName = "datetime")]
+    public DateTime LastModifiedDate { get; set; }
+
+    [Column("last_modified_by"), MaxLength(200)]
+    public string? LastModifiedBy { get; set; }
 }

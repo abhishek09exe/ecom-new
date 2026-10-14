@@ -1,5 +1,7 @@
 namespace ecom_new_api.Models.Responses;
 
+using System.Text.Json.Serialization;
+
 /// <summary>
 /// Response for POST /multi-trial/submissions.
 ///
@@ -8,6 +10,9 @@ namespace ecom_new_api.Models.Responses;
 /// </summary>
 public sealed class MultiTrialSubmissionResponse
 {
+    [JsonIgnore]
+    public int TrialId { get; init; }
+
     /// <summary>trial_registration.trial_registration_id</summary>
     public int TrialRegistrationId { get; init; }
 

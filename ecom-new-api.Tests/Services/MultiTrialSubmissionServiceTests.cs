@@ -26,6 +26,9 @@ public sealed class MultiTrialSubmissionServiceTests
         _skyriseMock
             .Setup(s => s.GenerateAsync(It.IsAny<KeycodeRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(KeycodeResult.Ok("TEST-KEYCODE"));
+        _repoMock
+            .Setup(r => r.InsertTrialAsync(It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TrialInsertProcedureResult { TrialId = 30000, FinalKeycode = "TRIAL-KEYCODE" });
 
         return new(
             _repoMock.Object,
@@ -36,7 +39,9 @@ public sealed class MultiTrialSubmissionServiceTests
 
     private static MultiTrialSubmissionRequest ValidRequest(
         List<MultiTrialModuleRequest>? modules = null,
-        int trialDays = 30) => new()
+        int trialDays = 30,
+        string licenseCategoryName = "SAEP",
+        int licenseKeycodeTypeId = 3) => new()
         {
             FirstName = "John",
             LastName = "Doe",
@@ -48,9 +53,10 @@ public sealed class MultiTrialSubmissionServiceTests
             State = "CO",
             LanguageCode = "en",
             LocationCode = "us",
-            LicenseCategoryName = "SAEP",
+            LicenseCategoryName = licenseCategoryName,
             LicenseSeats = 100,
             TrialDays = trialDays,
+            LicenseKeycodeTypeId = licenseKeycodeTypeId,
             Modules = modules ??
             [
                 new MultiTrialModuleRequest { LicenseCategoryName = "SDNS", LicenseSeats = 100 },
@@ -82,7 +88,7 @@ public sealed class MultiTrialSubmissionServiceTests
 
         Assert.Equal(ServiceResultKind.Ok, result.Kind);
         Assert.Equal(12345, result.Data!.TrialRegistrationId);
-        Assert.Equal("TEST-KEYCODE", result.Data.Keycode);
+        Assert.Equal("TRIAL-KEYCODE", result.Data.Keycode);
         Assert.Equal("create_master", result.Data.RequestType);
         Assert.Equal("MULTI", result.Data.FormType);
         Assert.Equal(2, result.Data.Modules.Count);
@@ -149,6 +155,46 @@ public sealed class MultiTrialSubmissionServiceTests
         Assert.Contains(result.ValidationErrors, e => e.StartsWith("modules[0].license_category_name must be one of"));
     }
 
+    [Theory]
+    [InlineData("WSAV", 3, "license_category_name must be 'SAEP' for Multi Trial")]
+    [InlineData("SAEP", 1, "license_keycode_type_id must be 3 for Multi Trial")]
+    public async Task SubmitAsync_UnsupportedPrimarySelectionStopsBeforeDependencies(
+        string primaryCategory,
+        int keycodeTypeId,
+        string expectedError)
+    {
+        var result = await CreateSut().SubmitAsync(ValidRequest(
+            licenseCategoryName: primaryCategory,
+            licenseKeycodeTypeId: keycodeTypeId));
+
+        Assert.Equal(ServiceResultKind.ValidationError, result.Kind);
+        Assert.Contains(expectedError, result.ValidationErrors);
+        _emailVerificationMock.Verify(v => v.VerifyAsync(
+            It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _repoMock.Verify(r => r.InsertTrialRegistrationAsync(
+            It.IsAny<MultiTrialSubmissionRequest>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _skyriseMock.Verify(s => s.GenerateAsync(
+            It.IsAny<KeycodeRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData("OTEDR")]
+    [InlineData("OTMDR")]
+    public async Task SubmitAsync_RemovedEdrMdrModules_ReturnValidationError(string category)
+    {
+        var request = ValidRequest([new MultiTrialModuleRequest { LicenseCategoryName = category, LicenseSeats = 1 }]);
+
+        var result = await CreateSut().SubmitAsync(request);
+
+        Assert.Equal(ServiceResultKind.ValidationError, result.Kind);
+        Assert.Contains(result.ValidationErrors, error =>
+            error.StartsWith("modules[0].license_category_name must be one of", StringComparison.Ordinal));
+        _repoMock.Verify(r => r.InsertTrialRegistrationAsync(
+            It.IsAny<MultiTrialSubmissionRequest>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _skyriseMock.Verify(s => s.GenerateAsync(
+            It.IsAny<KeycodeRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     [Fact]
     public async Task SubmitAsync_PillrSubModuleWithoutParent_ReturnsValidationError()
     {
@@ -167,34 +213,6 @@ public sealed class MultiTrialSubmissionServiceTests
 
         Assert.Equal(ServiceResultKind.ValidationError, result.Kind);
         Assert.Contains(result.ValidationErrors, e => e.StartsWith("trial_days must be one of"));
-    }
-
-    [Fact]
-    public async Task SubmitAsync_InvalidPartnerKey_ReturnsValidationErrorWithoutCallingRepository()
-    {
-        var request = new MultiTrialSubmissionRequest
-        {
-            FirstName = "John",
-            LastName = "Doe",
-            CustomerEmail = "john@company.com",
-            CompanyName = "Acme Corp",
-            Country = "US",
-            LicenseCategoryName = "SAEP",
-            LicenseSeats = 100,
-            PartnerKey = "uuid-partner-key",
-            Modules =
-            [
-                new MultiTrialModuleRequest { LicenseCategoryName = "SDNS", LicenseSeats = 100 },
-                new MultiTrialModuleRequest { LicenseCategoryName = "SECA", LicenseSeats = 100 }
-            ]
-        };
-
-        var result = await CreateSut().SubmitAsync(request);
-
-        Assert.Equal(ServiceResultKind.ValidationError, result.Kind);
-        Assert.Contains("partner_key must be a valid GUID if provided", result.ValidationErrors);
-        _repoMock.Verify(r => r.InsertTrialRegistrationAsync(
-            It.IsAny<MultiTrialSubmissionRequest>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -248,36 +266,98 @@ public sealed class MultiTrialSubmissionServiceTests
     public async Task SubmitAsync_SuccessfulSkyriseGeneration_ReturnsKeycode()
     {
         var sut = CreateSut();
+        var callOrder = new List<string>();
+        _emailVerificationMock
+            .Setup(v => v.VerifyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, CancellationToken>((_, _) => callOrder.Add("email"))
+            .ReturnsAsync(WebbulaVerificationResult.Allowed());
         _repoMock.Setup(r => r.InsertTrialRegistrationAsync(
                 It.IsAny<MultiTrialSubmissionRequest>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<MultiTrialSubmissionRequest, string, CancellationToken>((_, _, _) => callOrder.Add("registration"))
             .ReturnsAsync(SuccessRow());
         _skyriseMock.Setup(s => s.GenerateAsync(
                 It.IsAny<KeycodeRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<KeycodeRequest, CancellationToken>((_, _) => callOrder.Add("keycode"))
             .ReturnsAsync(KeycodeResult.Ok("SAEP-KEYCODE"));
+        _repoMock.Setup(r => r.InsertTrialAsync(
+                It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Callback<int, string?, CancellationToken>((_, keycode, _) => callOrder.Add($"trial:{keycode}"))
+            .ReturnsAsync(new TrialInsertProcedureResult { TrialId = 30001, FinalKeycode = "SAEP-KEYCODE" });
 
         var result = await sut.SubmitAsync(ValidRequest());
 
         Assert.Equal(ServiceResultKind.Ok, result.Kind);
         Assert.Equal("SAEP-KEYCODE", result.Data!.Keycode);
+        Assert.Equal(new[] { "email", "registration", "keycode", "trial:SAEP-KEYCODE" }, callOrder);
+        _repoMock.Verify(r => r.InsertTrialAsync(
+            12345, "SAEP-KEYCODE", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task SubmitAsync_SkyriseFailure_ContinuesWithoutKeycode()
+    public async Task SubmitAsync_SkyriseFailure_InsertsTrialWithNullKeycodeAndReturnsFallback()
+    {
+        var sut = CreateSut();
+        var callOrder = new List<string>();
+        _emailVerificationMock
+            .Setup(v => v.VerifyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, CancellationToken>((_, _) => callOrder.Add("email"))
+            .ReturnsAsync(WebbulaVerificationResult.Allowed());
+        _repoMock.Setup(r => r.InsertTrialRegistrationAsync(
+                It.IsAny<MultiTrialSubmissionRequest>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<MultiTrialSubmissionRequest, string, CancellationToken>((_, _, _) => callOrder.Add("registration"))
+            .ReturnsAsync(SuccessRow());
+        _skyriseMock.Setup(s => s.GenerateAsync(
+                It.IsAny<KeycodeRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<KeycodeRequest, CancellationToken>((_, _) => callOrder.Add("keycode"))
+            .ReturnsAsync(KeycodeResult.Failed("Skyrise unavailable"));
+        _repoMock.Setup(r => r.InsertTrialAsync(
+                It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Callback<int, string?, CancellationToken>((_, keycode, _) => callOrder.Add($"trial:{keycode ?? "null"}"))
+            .ReturnsAsync(new TrialInsertProcedureResult { TrialId = 30002, FinalKeycode = "DB-FALLBACK-KEY" });
+
+        var result = await sut.SubmitAsync(ValidRequest());
+
+        Assert.Equal(ServiceResultKind.Ok, result.Kind);
+        Assert.Equal("DB-FALLBACK-KEY", result.Data!.Keycode);
+        Assert.Equal(new[] { "email", "registration", "keycode", "trial:null" }, callOrder);
+        _skyriseMock.Verify(s => s.GenerateAsync(
+            It.IsAny<KeycodeRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+        _repoMock.Verify(r => r.InsertTrialAsync(
+            12345, null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SubmitAsync_TrialInsertionReturnsNoResult_ReturnsError()
     {
         var sut = CreateSut();
         _repoMock.Setup(r => r.InsertTrialRegistrationAsync(
                 It.IsAny<MultiTrialSubmissionRequest>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessRow());
-        _skyriseMock.Setup(s => s.GenerateAsync(
-                It.IsAny<KeycodeRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(KeycodeResult.Failed("Skyrise unavailable"));
+        _repoMock.Setup(r => r.InsertTrialAsync(
+                It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TrialInsertProcedureResult?)null);
 
         var result = await sut.SubmitAsync(ValidRequest());
 
-        Assert.Equal(ServiceResultKind.Ok, result.Kind);
-        Assert.Null(result.Data!.Keycode);
-        _skyriseMock.Verify(s => s.GenerateAsync(
-            It.IsAny<KeycodeRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(ServiceResultKind.Error, result.Kind);
+        Assert.Equal("Trial insert could not be completed", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task SubmitAsync_TrialInsertionThrows_ReturnsError()
+    {
+        var sut = CreateSut();
+        _repoMock.Setup(r => r.InsertTrialRegistrationAsync(
+                It.IsAny<MultiTrialSubmissionRequest>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessRow());
+        _repoMock.Setup(r => r.InsertTrialAsync(
+                It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("database operation failed"));
+
+        var result = await sut.SubmitAsync(ValidRequest());
+
+        Assert.Equal(ServiceResultKind.Error, result.Kind);
+        Assert.Equal("Trial insert could not be completed", result.ErrorMessage);
     }
 
     [Fact]

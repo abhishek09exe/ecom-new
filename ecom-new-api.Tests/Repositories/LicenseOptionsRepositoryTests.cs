@@ -159,7 +159,6 @@ public sealed class LicenseOptionsRepositoryTests : IDisposable
 
         ctx.ProductLicenseCategory.Add(new ProductLicenseCategory
         {
-            ProductLicenseCategoryId = 1,
             ProductId = 1515110108,
             LicenseCategoryId = 220
         });
@@ -216,7 +215,6 @@ public sealed class LicenseOptionsRepositoryTests : IDisposable
 
         ctx.ProductYears.Add(new ProductYears
         {
-            ProductYearsId = 1,
             ProductId = 1515110108,
             Years = 1
         });
@@ -903,13 +901,11 @@ public sealed class LicenseOptionsRepositoryTests : IDisposable
         ctx.ProductLicenseCategory.AddRange(
             new ProductLicenseCategory
             {
-                ProductLicenseCategoryId = 9101,
                 ProductId = primaryProductId,
                 LicenseCategoryId = 1
             },
             new ProductLicenseCategory
             {
-                ProductLicenseCategoryId = 9102,
                 ProductId = upgradeProductId,
                 LicenseCategoryId = 253
             });

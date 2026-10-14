@@ -1,6 +1,7 @@
 using ecom_new_api.Data;
 using ecom_new_api.Helpers;
 using ecom_new_api.Repositories.Cart;
+using ecom_new_api.Repositories.Forms;
 using ecom_new_api.Repositories.LicenseOptions;
 using ecom_new_api.Repositories.Pricing;
 using ecom_new_api.Repositories.Skyrise;
@@ -59,10 +60,12 @@ builder.Services.AddScoped<AppDbContext>(sp =>
 
 // ── Repositories ────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderRepository, CartOrderRepository>();
+builder.Services.AddScoped<IFormResponseRepository, FormResponseRepository>();
 builder.Services.AddScoped<ILicenseOptionsRepository, LicenseOptionsRepository>();
 builder.Services.AddScoped<IPricingRepository, PricingRepository>();
 builder.Services.AddScoped<ISkyriseFailureRepository, SkyriseFailureRepository>();
 builder.Services.AddScoped<ITrialRegistrationRepository, TrialRegistrationRepository>();
+builder.Services.AddScoped<LicenseServiceStagingRepository>();
 
 // ── Services ────────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderService, CartOrderService>();

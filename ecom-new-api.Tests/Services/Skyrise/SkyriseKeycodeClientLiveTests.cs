@@ -19,9 +19,8 @@ namespace ecom_new_api_tests.Services.Skyrise;
 ///   $env:SKYRISE_LIVE_TEST = "1"
 ///   dotnet test --filter FullyQualifiedName~SkyriseKeycodeClientLiveTests
 ///
-/// Uses the real QA credentials — copy them from ecom-new-api/appsettings.Development.json
-/// (gitignored) into environment variables before running, or edit the options below directly
-/// for a one-off local run. Never commit real secrets into this file.
+/// Requires approved QA credentials and endpoint settings through environment variables. It does
+/// not fall back to committed or local configuration values.
 /// </summary>
 public sealed class SkyriseKeycodeClientLiveTests
 {
@@ -46,27 +45,27 @@ public sealed class SkyriseKeycodeClientLiveTests
             return;
         }
 
+        var tokenUrl = GetRequiredQaEndpoint(
+            "SKYRISE_TOKEN_URL", "skyidentity-qa.webrootcloudav.com", "/connect/token");
+        var skyriseBaseUrl = GetRequiredQaEndpoint(
+            "SKYRISE_BASE_URL", "skyrise-qa.webrootcloudav.com", "/");
+
         var skyIdentityOptions = Options.Create(new SkyIdentityOptions
         {
-            TokenUrl = Environment.GetEnvironmentVariable("SKYRISE_TOKEN_URL")
-                ?? "https://skyidentity-qa.webrootcloudav.com/connect/token",
-            ClientId = Environment.GetEnvironmentVariable("SKYRISE_CLIENT_ID") ?? "EcomConsumer",
-            ClientSecret = Environment.GetEnvironmentVariable("SKYRISE_CLIENT_SECRET")
-                ?? "4ddefd26-e06f-4352-b89d-5e46d7218491",
+            TokenUrl = tokenUrl,
+            ClientId = GetRequiredEnvironmentVariable("SKYRISE_CLIENT_ID"),
+            ClientSecret = GetRequiredEnvironmentVariable("SKYRISE_CLIENT_SECRET"),
         });
 
         var skyriseOptions = Options.Create(new SkyriseOptions
         {
-            BaseUrl = Environment.GetEnvironmentVariable("SKYRISE_BASE_URL")
-                ?? "https://skyrise-qa.webrootcloudav.com",
-            ClientName = Environment.GetEnvironmentVariable("SKYRISE_LEGACY_CLIENT_NAME") ?? "ThundercatsQA",
-            AccessKey = Environment.GetEnvironmentVariable("SKYRISE_LEGACY_ACCESS_KEY")
-                ?? "ab387584-11f8-473e-a1e8-e3a4c1784661",
-            SecretKey = Environment.GetEnvironmentVariable("SKYRISE_LEGACY_SECRET_KEY")
-                ?? "vZv4bKfrZA88ZAeuAzC9JZT7Xqu5xFUWuL3-mEg4EahJ",
+            BaseUrl = skyriseBaseUrl,
+            ClientName = GetRequiredEnvironmentVariable("SKYRISE_LEGACY_CLIENT_NAME"),
+            AccessKey = GetRequiredEnvironmentVariable("SKYRISE_LEGACY_ACCESS_KEY"),
+            SecretKey = GetRequiredEnvironmentVariable("SKYRISE_LEGACY_SECRET_KEY"),
         });
 
-        using var tokenHttpClient = new HttpClient();
+        using var tokenHttpClient = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
         var tokenProvider = new SkyIdentityTokenProvider(
             tokenHttpClient, skyIdentityOptions, NullLogger<SkyIdentityTokenProvider>.Instance);
 
@@ -81,7 +80,7 @@ public sealed class SkyriseKeycodeClientLiveTests
         db.Database.EnsureCreated();
         var failureRepository = new SkyriseFailureRepository(db, NullLogger<SkyriseFailureRepository>.Instance);
 
-        using var skyriseHttpClient = new HttpClient();
+        using var skyriseHttpClient = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
         var sut = new SkyriseKeycodeClient(
             skyriseHttpClient,
             skyriseOptions,
@@ -105,12 +104,10 @@ public sealed class SkyriseKeycodeClientLiveTests
 
         var result = await sut.GenerateAsync(request);
 
-        _output.WriteLine($"Success={result.Success}, Keycode={result.Keycode}, ErrorMessage={result.ErrorMessage}");
+        _output.WriteLine($"Skyrise result: {GetSafeDiagnostic(result)}");
 
-        // We don't assert Success == true here: the point of this test is to observe real QA
-        // behavior (which may still fail while the LegacyAuthToken creds are unverified — see
-        // Project_Info/SKYRISE_KEYCODE_SERVICE_SUMMARY.md follow-up #3). Assert we got a
-        // well-formed, non-throwing result either way, and print it for manual inspection.
+        // QA behavior can vary, so assert only that the client returns a structured result and
+        // emit the sanitized diagnostic category above.
         Assert.NotNull(result);
         if (result.Success)
         {
@@ -123,5 +120,88 @@ public sealed class SkyriseKeycodeClientLiveTests
             // Failure was audited.
             Assert.Equal(1, await db.SkyriseFailure.CountAsync());
         }
+    }
+
+    private static string GetRequiredEnvironmentVariable(string name)
+    {
+        var value = Environment.GetEnvironmentVariable(name)?.Trim();
+        return !string.IsNullOrWhiteSpace(value)
+            ? value
+            : throw new InvalidOperationException($"Required QA setting {name} is missing.");
+    }
+
+    private static string GetRequiredQaEndpoint(string name, string approvedHost, string approvedPath)
+    {
+        return ValidateQaEndpoint(GetRequiredEnvironmentVariable(name), name, approvedHost, approvedPath);
+    }
+
+    private static string ValidateQaEndpoint(string value, string name, string approvedHost, string approvedPath)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var endpoint)
+            || endpoint.Scheme != Uri.UriSchemeHttps
+            || !string.Equals(endpoint.IdnHost, approvedHost, StringComparison.OrdinalIgnoreCase)
+            || !endpoint.IsDefaultPort
+            || !string.IsNullOrEmpty(endpoint.UserInfo)
+            || !string.Equals(endpoint.AbsolutePath, approvedPath, StringComparison.Ordinal)
+            || !string.IsNullOrEmpty(endpoint.Query)
+            || !string.IsNullOrEmpty(endpoint.Fragment))
+        {
+            throw new InvalidOperationException($"{name} must use the approved HTTPS QA endpoint.");
+        }
+
+        return approvedPath == "/"
+            ? endpoint.GetLeftPart(UriPartial.Authority)
+            : endpoint.GetLeftPart(UriPartial.Path);
+    }
+
+    [Theory]
+    [InlineData("https://skyidentity-qa.webrootcloudav.com/connect/token", "SKYRISE_TOKEN_URL", "skyidentity-qa.webrootcloudav.com", "/connect/token")]
+    [InlineData("https://skyrise-qa.webrootcloudav.com/", "SKYRISE_BASE_URL", "skyrise-qa.webrootcloudav.com", "/")]
+    public void ValidateQaEndpoint_AcceptsApprovedQaEndpoints(
+        string value, string name, string approvedHost, string approvedPath)
+    {
+        var validated = ValidateQaEndpoint(value, name, approvedHost, approvedPath);
+
+        Assert.Equal(value.TrimEnd('/'), validated.TrimEnd('/'));
+    }
+
+    [Theory]
+    [InlineData("https://skyrise.webrootcloudav.com/", "SKYRISE_BASE_URL", "skyrise-qa.webrootcloudav.com", "/")]
+    [InlineData("http://skyrise-qa.webrootcloudav.com/", "SKYRISE_BASE_URL", "skyrise-qa.webrootcloudav.com", "/")]
+    [InlineData("https://skyrise-qa.webrootcloudav.com:444/", "SKYRISE_BASE_URL", "skyrise-qa.webrootcloudav.com", "/")]
+    [InlineData("https://skyrise-qa.webrootcloudav.com/other", "SKYRISE_BASE_URL", "skyrise-qa.webrootcloudav.com", "/")]
+    [InlineData("https://skyrise-qa.webrootcloudav.com/?target=production", "SKYRISE_BASE_URL", "skyrise-qa.webrootcloudav.com", "/")]
+    public void ValidateQaEndpoint_RejectsNonApprovedEndpoints(
+        string value, string name, string approvedHost, string approvedPath)
+    {
+        Assert.Throws<InvalidOperationException>(
+            () => ValidateQaEndpoint(value, name, approvedHost, approvedPath));
+    }
+
+    private static string GetSafeDiagnostic(KeycodeResult result)
+    {
+        if (result.Success)
+        {
+            return "success";
+        }
+
+        var category = result.ErrorMessage;
+        if (category is "product_matrix_missing"
+            or "license_type_id_map_missing"
+            or "skyrise_response_missing_license_key"
+            or "skyrise_request_failed")
+        {
+            return category;
+        }
+
+        const string HttpFailurePrefix = "skyrise_http_";
+        if (category?.StartsWith(HttpFailurePrefix, StringComparison.Ordinal) == true
+            && int.TryParse(category.AsSpan(HttpFailurePrefix.Length), out var statusCode)
+            && statusCode is >= 100 and <= 599)
+        {
+            return $"HTTP {statusCode}";
+        }
+
+        return "skyrise_failure";
     }
 }

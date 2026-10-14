@@ -33,7 +33,14 @@ public sealed class AppDbContext : DbContext
 
     // ── License tables ──────────────────────────────────────────────────────────
     public DbSet<LicenseKey> LicenseKey => Set<LicenseKey>();
+    public DbSet<LicenseFeatureLicense> LicenseFeatureLicense => Set<LicenseFeatureLicense>();
     public DbSet<LicenseCategory> LicenseCategory => Set<LicenseCategory>();
+    public DbSet<LicenseCategoryCapability> LicenseCategoryCapability => Set<LicenseCategoryCapability>();
+    public DbSet<ProductLineLicenseDistributionMethod> ProductLineLicenseDistributionMethod => Set<ProductLineLicenseDistributionMethod>();
+    public DbSet<LicenseModuleCategory> LicenseModuleCategory => Set<LicenseModuleCategory>();
+    public DbSet<LicenseModule> LicenseModule => Set<LicenseModule>();
+    public DbSet<LicenseModuleType> LicenseModuleType => Set<LicenseModuleType>();
+    public DbSet<LicenseModuleLicense> LicenseModuleLicense => Set<LicenseModuleLicense>();
     public DbSet<LicenseKeycodeType> LicenseKeycodeType => Set<LicenseKeycodeType>();
     public DbSet<LicenseAttributeLicenseValue> LicenseAttributeLicenseValue => Set<LicenseAttributeLicenseValue>();
     public DbSet<License> License => Set<License>();
@@ -61,6 +68,10 @@ public sealed class AppDbContext : DbContext
 
     // ── Skyrise audit tables ─────────────────────────────────────────────────────
     public DbSet<SkyriseFailure> SkyriseFailure => Set<SkyriseFailure>();
+    public DbSet<LicenseServiceType> LicenseServiceType => Set<LicenseServiceType>();
+    public DbSet<LicenseServiceStatus> LicenseServiceStatus => Set<LicenseServiceStatus>();
+    public DbSet<LicenseService> LicenseService => Set<LicenseService>();
+    public DbSet<LicenseServiceJson> LicenseServiceJson => Set<LicenseServiceJson>();
 
     // ── Product tables ──────────────────────────────────────────────────────────
     public DbSet<Product> Product => Set<Product>();
@@ -68,6 +79,9 @@ public sealed class AppDbContext : DbContext
     public DbSet<ProductType> ProductType => Set<ProductType>();
     public DbSet<ProductLine> ProductLine => Set<ProductLine>();
     public DbSet<ProductLineProduct> ProductLineProduct => Set<ProductLineProduct>();
+    public DbSet<LicenseCategoryProductLine> LicenseCategoryProductLine => Set<LicenseCategoryProductLine>();
+    public DbSet<ProductCapability> ProductCapability => Set<ProductCapability>();
+    public DbSet<LuCountry> LuCountry => Set<LuCountry>();
     public DbSet<ProductLicenseCategory> ProductLicenseCategory => Set<ProductLicenseCategory>();
     public DbSet<ProductLicenseCategorySeat> ProductLicenseCategorySeat => Set<ProductLicenseCategorySeat>();
     public DbSet<ProductLicenseCategoryYears> ProductLicenseCategoryYears => Set<ProductLicenseCategoryYears>();
@@ -76,10 +90,62 @@ public sealed class AppDbContext : DbContext
     public DbSet<ProductSeat> ProductSeat => Set<ProductSeat>();
     public DbSet<ProductPricing> ProductPricing => Set<ProductPricing>();
     public DbSet<ItemHierarchy> ItemHierarchy => Set<ItemHierarchy>();
+    public DbSet<CartDiscount> CartDiscount => Set<CartDiscount>();
+    public DbSet<CartDiscountItem> CartDiscountItem => Set<CartDiscountItem>();
+    public DbSet<MessageCampaign> MessageCampaign => Set<MessageCampaign>();
+    public DbSet<MessageCampaignPlatform> MessageCampaignPlatform => Set<MessageCampaignPlatform>();
+    public DbSet<MessageCampaignCartDiscount> MessageCampaignCartDiscount => Set<MessageCampaignCartDiscount>();
+    public DbSet<MessageCampaignLanguageLocation> MessageCampaignLanguageLocation => Set<MessageCampaignLanguageLocation>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<LicenseService>().HasOne<LicenseServiceType>().WithMany()
+            .HasForeignKey(service => service.LicenseServiceTypeId);
+        modelBuilder.Entity<LicenseService>().HasOne<LicenseServiceStatus>().WithMany()
+            .HasForeignKey(service => service.LicenseServiceStatusId);
+        var currentDateSql = Database.IsSqlServer() ? "GETDATE()" : "CURRENT_TIMESTAMP";
+        modelBuilder.Entity<LicenseModuleLicense>().HasOne<License>().WithMany()
+            .HasForeignKey(row => row.LicenseId);
+        modelBuilder.Entity<LicenseModuleLicense>().HasOne<LicenseModule>().WithMany()
+            .HasForeignKey(row => row.LicenseModuleId);
+        modelBuilder.Entity<LicenseModuleLicense>().HasOne<LicenseModuleType>().WithMany()
+            .HasForeignKey(row => row.LicenseModuleTypeId);
+        modelBuilder.Entity<LicenseModuleLicense>().Property(row => row.LastModifiedBy).IsUnicode(false);
+        modelBuilder.Entity<LicenseCategoryLicense>().HasIndex(row => row.LicenseId).IsUnique();
+        modelBuilder.Entity<LicenseCategoryLicense>().HasOne<License>().WithMany().HasForeignKey(row => row.LicenseId);
+        modelBuilder.Entity<LicenseCategoryLicense>().HasOne<LicenseCategory>().WithMany().HasForeignKey(row => row.LicenseCategoryId);
+        modelBuilder.Entity<LicenseCategoryLicense>().Property(row => row.LastModifiedBy).IsUnicode(false);
+        modelBuilder.Entity<LicenseCapability>().HasIndex(row => new { row.LicenseId, row.CapabilityId }).IsUnique();
+        modelBuilder.Entity<LicenseCapability>().HasOne<License>().WithMany().HasForeignKey(row => row.LicenseId);
+        modelBuilder.Entity<LicenseCapability>().Property(row => row.InsertBy).IsUnicode(false);
+        modelBuilder.Entity<LicenseCapability>().Property(row => row.ModifiedBy).IsUnicode(false);
+        modelBuilder.Entity<LicenseSeat>().HasIndex(row => row.LicenseId).IsUnique();
+        modelBuilder.Entity<LicenseSeat>().HasOne<License>().WithMany().HasForeignKey(row => row.LicenseId);
+        modelBuilder.Entity<LicenseSeat>().Property(row => row.SeatsUsed).HasDefaultValue(0);
+        modelBuilder.Entity<LicenseSeat>().Property(row => row.InsertBy).IsUnicode(false);
+        modelBuilder.Entity<LicenseSeat>().Property(row => row.ModifiedBy).IsUnicode(false);
+        modelBuilder.Entity<LicenseKey>().Property(row => row.LicenseId).ValueGeneratedNever();
+        modelBuilder.Entity<LicenseKey>().Property(row => row.Key).HasDefaultValueSql("NEWID()");
+        modelBuilder.Entity<LicenseKey>().Property(row => row.SalesforceLicenseId).IsUnicode(false);
+        modelBuilder.Entity<LicenseFeatureLicense>().HasOne<License>().WithMany().HasForeignKey(row => row.LicenseId);
+        modelBuilder.Entity<LicenseFeatureLicense>().Property(row => row.InsertDate).HasDefaultValueSql(currentDateSql);
+        modelBuilder.Entity<LicenseFeatureLicense>().Property(row => row.InsertBy)
+            .IsUnicode(false).HasDefaultValueSql(Database.IsSqlServer() ? "SUSER_SNAME()" : "'sqlite-user'");
+        modelBuilder.Entity<LicenseFeatureLicense>().Property(row => row.InsertBy).HasSentinel(string.Empty);
+        modelBuilder.Entity<LicenseFeatureLicense>().Property(row => row.LicenseFeatureValue).IsUnicode(false);
+        modelBuilder.Entity<LicenseService>().Property(service => service.InsertDate)
+            .HasColumnType("datetime").HasDefaultValueSql(currentDateSql);
+        modelBuilder.Entity<LicenseService>().Property(service => service.ProcessDate)
+            .HasColumnType("datetime").HasDefaultValueSql(currentDateSql);
+        modelBuilder.Entity<LicenseService>().Property(service => service.UpdateAttempts)
+            .HasDefaultValue((byte)0);
+        modelBuilder.Entity<LicenseService>().Property(service => service.LicenseServiceStatusId)
+            .HasDefaultValue((byte)1);
+        modelBuilder.Entity<LicenseServiceType>().Property(type => type.LicenseServiceTypeName).IsUnicode(false);
+        modelBuilder.Entity<LicenseServiceType>().Property(type => type.ProcessType).IsUnicode(false);
+        modelBuilder.Entity<LicenseServiceStatus>().Property(status => status.LicenseServiceStatusName).IsUnicode(false);
 
         // cart_order → cart_order_partner (0..1)
         modelBuilder.Entity<CartOrder>()
@@ -179,7 +245,20 @@ public sealed class AppDbContext : DbContext
             .WithMany()
             .HasForeignKey(plp => plp.ProductLineId);
 
+        modelBuilder.Entity<LicenseCategoryProductLine>()
+            .HasOne(lcpl => lcpl.LicenseCategory)
+            .WithMany()
+            .HasForeignKey(lcpl => lcpl.LicenseCategoryId);
+
+        modelBuilder.Entity<ProductCapability>()
+            .HasOne(pc => pc.Product)
+            .WithMany()
+            .HasForeignKey(pc => pc.ProductId);
+
         // product_license_category
+        modelBuilder.Entity<ProductLicenseCategory>()
+            .HasKey(plc => new { plc.LicenseCategoryId, plc.ProductId });
+
         modelBuilder.Entity<ProductLicenseCategory>()
             .HasOne(plc => plc.Product)
             .WithMany(p => p.ProductLicenseCategories)
@@ -191,6 +270,9 @@ public sealed class AppDbContext : DbContext
             .HasForeignKey(plc => plc.LicenseCategoryId);
 
         // product_years
+        modelBuilder.Entity<ProductYears>()
+            .HasKey(py => new { py.ProductId, py.Years });
+
         modelBuilder.Entity<ProductYears>()
             .HasOne(py => py.Product)
             .WithMany(p => p.ProductYears)
@@ -233,5 +315,8 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<License>()
             .Property(l => l.Keycode)
             .IsUnicode(false);
+        modelBuilder.Entity<License>()
+            .Property(license => license.MaxDailyActivations)
+            .HasDefaultValue(30);
     }
 }

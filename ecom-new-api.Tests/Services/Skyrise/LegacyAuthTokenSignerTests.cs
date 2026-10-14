@@ -16,9 +16,9 @@ public sealed class LegacyAuthTokenSignerTests
     {
         var options = new SkyriseOptions
         {
-            ClientName = "ThundercatsQA",
-            AccessKey = "ab387584-11f8-473e-a1e8-e3a4c1784661",
-            SecretKey = "vZv4bKfrZA88ZAeuAzC9JZT7Xqu5xFUWuL3-mEg4EahJ",
+            ClientName = "test-client",
+            AccessKey = "test-access-key",
+            SecretKey = "test-signing-secret",
         };
         var sut = CreateSut(options);
 

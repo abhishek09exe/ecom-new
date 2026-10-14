@@ -34,7 +34,9 @@ public sealed class SkyriseFailureRepository : ISkyriseFailureRepository
         catch (Exception ex)
         {
             // Auditing must never take down the caller — log and swallow.
-            _logger.LogError(ex, "Failed to persist Skyrise failure audit row.");
+            _logger.LogError(
+                "Failed to persist Skyrise failure audit row. ExceptionType={ExceptionType}",
+                ex.GetType().Name);
         }
     }
 }

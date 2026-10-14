@@ -1,4 +1,3 @@
-using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace ecom_new_api.Data.Entities;
@@ -6,10 +5,6 @@ namespace ecom_new_api.Data.Entities;
 [Table("product_license_category")]
 public sealed class ProductLicenseCategory
 {
-    [Key]
-    [Column("product_license_category_id")]
-    public int ProductLicenseCategoryId { get; set; }
-
     [Column("product_id")]
     public int ProductId { get; set; }
 

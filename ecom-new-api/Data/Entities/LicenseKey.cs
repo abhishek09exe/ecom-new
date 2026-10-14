@@ -13,4 +13,7 @@ public sealed class LicenseKey
     // uniqueidentifier in DB — must be Guid to avoid SqlDataReader.GetString() cast failure on reads
     [Column("license_key")]
     public Guid Key { get; set; }
+
+    [Column("salesforce_license_id"), MaxLength(18)]
+    public string? SalesforceLicenseId { get; set; }
 }

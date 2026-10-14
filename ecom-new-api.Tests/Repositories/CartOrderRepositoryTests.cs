@@ -54,7 +54,7 @@ public sealed class CartOrderRepositoryTests : IDisposable
     {
         if (!await ctx.Currency.AnyAsync())
         {
-            ctx.Currency.Add(new Currency { CurrencyId = 1, CurrencyCode = "USD" });
+            ctx.Currency.Add(new Currency { CurrencyId = 1, CurrencyCode = "USD", CurrencyDescription = "US Dollar" });
             await ctx.SaveChangesAsync();
         }
     }
@@ -167,8 +167,8 @@ public sealed class CartOrderRepositoryTests : IDisposable
     {
         await using var ctx = NewContext();
         ctx.Currency.AddRange(
-            new Currency { CurrencyId = 1, CurrencyCode = "USD" },
-            new Currency { CurrencyId = 2, CurrencyCode = "EUR" });
+            new Currency { CurrencyId = 1, CurrencyCode = "USD", CurrencyDescription = "US Dollar" },
+            new Currency { CurrencyId = 2, CurrencyCode = "EUR", CurrencyDescription = "Euro" });
         await ctx.SaveChangesAsync();
 
         var repo = NewRepo(ctx);
@@ -538,8 +538,8 @@ public sealed class CartOrderRepositoryTests : IDisposable
     {
         await using var ctx = NewContext();
         ctx.Currency.AddRange(
-            new Currency { CurrencyId = 1, CurrencyCode = "USD" },
-            new Currency { CurrencyId = 3, CurrencyCode = "EUR" });
+            new Currency { CurrencyId = 1, CurrencyCode = "USD", CurrencyDescription = "US Dollar" },
+            new Currency { CurrencyId = 3, CurrencyCode = "EUR", CurrencyDescription = "Euro" });
         await ctx.SaveChangesAsync();
 
         ctx.CartOrder.Add(new CartOrder

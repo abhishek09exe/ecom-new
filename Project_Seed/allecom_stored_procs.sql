@@ -8250,7 +8250,8 @@ d INT,
 			license_seats INT,
 			storage_gb INT,
 			license_keycode_type_id INT,
-			start_date DATETIME,
+			start_date DATETIME,
+
 
 			expiration_date DATETIME,
 			license_attribute_id INT,
@@ -8993,7 +8994,8 @@ n_date IS NULL THEN
 
 		UPDATE dbo.auto_renewal_message 
 		SET auto_renewal_message_status_id = 1
-		WHERE auto_renewal_message_id in (SELECT auto_renewal_message_id FROM #recs)
+		WHERE auto_renewal_message_id in (SELECT auto_renewal_message_id FROM #recs)
+
 
 
 
@@ -27386,7 +27388,8 @@ CREATE   PROCEDURE [dbo].[usp_cart_select_cart_standard_upsell]
                                                       Changed Zuora pricing logic to use Zuora pricing for all renewals with location code USA
 	2025-05-15	jberry		US-3040357 - Changed section 1.4 to use the license distribution method passed into @license_distribution_method_id when the @keycode is NULL
 
-	DESCRIPTION
+	DESCRIPTION
+
 
 	select upsell
 
@@ -36626,7 +36629,8 @@ BEGIN TRY
         -- 1.1) new product that can be bundled
 
         INSERT INTO @item_summary
-        (
+        (
+
 
             cart_item_bundle_id,
             product_family_id,
@@ -43147,7 +43151,8 @@ AS
 			      AND c.customer_type_id = 2
 		END
 	ELSE
-		BEGIN
+		BEGIN
+
 
 		   	SELECT @vat_rate = CASE WHEN lc.vat_rate = 0 THEN ls.vat_rate ELSE lc.vat_rate END,
 			       @vat_id = c.vat_id,
@@ -48198,7 +48203,8 @@ IN product_license_category plc
                pl.product_line_id,
                i.item_hierarchy_id,
                start_date = MIN(i.start_date),
-               end_date = MAX(i.capability_expiration_date),
+               end_date = MAX(i.capability_expiration_date),
+
 
                license_seats = CASE
                                    WHEN pl.product_line_id NOT IN ( 55, 300 ) THEN
@@ -49969,7 +49975,8 @@ n/cbn:Purchase/cbt:DeliveryContact/cbt:City)[1]', 'nvarchar(130)') as [customer.
 			--audit the cart_order_item data since we are going to delete and then insert below
 			insert into dbo.cart_order_item_audit (cart_order_item_id, cart_order_id, line_item, quantity, order_item_offer_amount, list_price, unit_price, tax_item_total,
 												product_id, insert_date, insert_by, modified_date, modified_by, cart_item_bundle_id, start_date, expiration_date, 
-												vendor_order_item_code, order_item_update_type_id, license_attribute_license_value, item_hierarchy_id, sap_material_number, storage_gb)
+												vendor_order_item_code, order_item_update_type_id, license_attribute_license_value, item_hierarchy_id, sap_material_number, storage_gb)
+
 
 			select cart_order_item_id, cart_order_id, line_item, quantity, order_item_offer_amount, list_price, unit_price, tax_item_total,
 					product_id, insert_date, insert_by, modified_date, modified_by, cart_item_bundle_id, start_date, expiration_date, 
@@ -58982,7 +58989,8 @@ d @customer_id is null and @company_id is null and @company_name is null
                                         @vendor_customer_id = case when @vendor_customer_id is null then vendor_customer_id else @vendor_customer_id end
                                 from @customers
                                 where salesforce_contact_id is null                            
-                            end
+                            end
+
 
                     end
             end
@@ -70973,7 +70981,8 @@ _id = 2)
 								license_seats
 							FROM license_summary ls WITH (NOLOCK)
 								INNER JOIN exact_target_license_activation etla WITH (NOLOCK)
-									ON ls.license_id = etla.license_id
+									ON ls.license_id = etla.license_id
+
 
 							WHERE CAST(etla.capability_activation_date As Date) = DATEADD(dd, - @message_measure_days , @date_value)
 								AND license_status_id = 1
@@ -84326,7 +84335,8 @@ AS
 	if @expiration_date < getdate() or @expiration_date is null
 		-- 
 		begin
-			set @allow_upgrade_days = 30
+			set @allow_upgrade_days = 30
+
 			set @activation_date = null
 			set @expiration_date = null
 		end
@@ -87863,7 +87873,8 @@ ER JOIN dbo.license_distribution_method dm
 			FROM dbo.sfdc_template_update_type
 			WHERE sfdc_template_id = @sfdc_template_id)
 
-			-- 3.3.13) insert rows into sfdc_opportunity_update
+			-- 3.3.13) insert rows into sfdc_opportunity_update
+
 
 			INSERT INTO dbo.sfdc_opportunity_update (
 				license_id, 
@@ -97020,12 +97031,14 @@ er_id = @customer_id,
 	
 	-- 5.) return results 
 	select registration_success = 
-			case 				when @response_code = 0 then 1
+			case 
+				when @response_code = 0 then 1
 				else 0
 			end,
 		existing_customer = @is_existing_customer,
 		license_registration_invalid_id = 
-			case 				when @response_code = 0 then null
+			case 
+				when @response_code = 0 then null
 				else @license_registration_invalid_id
 			end,
 		response_code = @response_code,
@@ -103917,7 +103930,8 @@ BEGIN TRY
 		SELECT lc.license_category_name,
 			   lch.column_name ,
 			   lch.column_header 
-		FROM dbo.license_category_activity_headers lch
+		FROM dbo.license_category_activity_headers lch
+
 
 			JOIN dbo.license_category lc
 				ON lch.license_category_id = lc.license_category_id
@@ -109402,7 +109416,8 @@ _category_id = fact.license_category_id
 				on l.customer_id = e.customer_id and e.email_status_id = 1
 			left join dbo.customer_address ca
 				on l.customer_id = ca.customer_id
-					and ca.address_status_id = 1
+					and ca.address_status_id = 1
+
 
 					and ca.address_type_id = 1
 			left join dbo.lu_countries lc
@@ -122645,7 +122660,8 @@ bility_activation_days,0),
 				days_remaining,
 				days_added = isnull(product_capability_activation_days,0),
 				days_new = isnull(new_capability_activation_days,0),
-				days_contiguous = 
+				days_contiguous = 
+
 
 						case 
 							when days_remaining > 0 and isnull(capability_activation_days - days_remaining,0) > 0 and last_capability_type_id = capability_type_id and days_remaining = new_capability_activation_days then last_days_contiguous
@@ -137166,7 +137182,8 @@ AS
 	--Populate @ar_messages with uncompleted license_message records, ordering by status and recency
 	insert into @ar_messages (license_message_id, message_status_id)
 	select license_message_id, message_status_id 
-	from license_message with (nolock)
+	from license_message with (nolock)
+
 
 	where license_id = @license_id
 		and message_type_id = 3
@@ -140825,7 +140842,8 @@ AS
 	set @current_set = 1
 
 	select @license_capability_count = convert(int,count(*)/250) + 1
-	from msn_churn_expiration_update
+	from msn_churn_expiration_update
+
 
 	while @current_set <= @license_capability_count
 		begin
@@ -141674,7 +141692,8 @@ ssing (item_json)
 						Billing_type varchar(20) '$.Billing_type',
 						Total_Storage INT '$.Total_Storage'
 					) j
-
+
+
 
 					select @record_json = null, @loop_value = @loop_value + 1
 				end
@@ -148481,7 +148500,8 @@ HAR(255),
 	-------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 	-- 2.1) @sap_account_pending
-		
+		
+
 
 	SELECT @sfdc_template_name = 'sap_create_customer'
 
@@ -155763,7 +155783,8 @@ billing_revenue_fact fact
 
 	END TRY
 
-	BEGIN CATCH
+	BEGIN CATCH
+
 
 	
 		IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION
@@ -157661,7 +157682,8 @@ cense_value IN (12,112,212) THEN 0 ELSE license_seats END,
 		select b.license_id, max_order_header_id = max(h.order_header_id), min_order_header_id = min(h.order_header_id),b.license_category_id
 		from #partner_billing b
 		inner join dbo.order_item_license il with (nolock)
-			on il.license_id = b.license_id
+			on il.license_id = b.license_id
+
 
 		inner join dbo.order_item i with (nolock)
 			on il.order_item_id = i.order_item_id
@@ -176407,7 +176429,8 @@ AS
 			begin
 				set @response_code = -270
 				set @message = 'Error - delete order_load_audit'
-				rollback transaction 
+				rollback transaction 
+
 
 				return
 			end		
@@ -185281,7 +185304,8 @@ begin try
 						and company_name_type_id = 1 --Primary
 
 					update company_name
-					set company_name_type_id = 1, modified_date = getdate(), modified_by = @transaction_user
+					set company_name_type_id = 1, modified_date = getdate(), modified_by = @transaction_user
+
 
 					where company_id = @company_id
 						and company_name_type_id = 2 --Secondary
@@ -186272,7 +186296,8 @@ where sap_account.sap_account_id = @sap_account_id
 	-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 	-- 4.1) customer_service_archive
-	insert into customer_service_archive(customer_service_id,customer_service_type_id,customer_service_status_id,insert_date,archive_date)
+	insert into customer_service_archive(customer_service_id,customer_service_type_id,customer_service_status_id,insert_date,archive_date)
+
 
 	select cs.customer_service_id, cs.customer_service_type_id, 2 as customer_service_status_id, cs.insert_date, getdate() as archive_date
 	from customer_service cs 
@@ -186815,7 +186840,8 @@ BEGIN CATCH
 		ErrorSeverity,
 		ErrorState,
 		ErrorProcedure,
-		ErrorLine,
+		ErrorLine,
+
 
 		ErrorMessage,
 		ErrorServer,
@@ -190544,7 +190570,8 @@ CREATE PROCEDURE [dbo].[usp_select_latest_product_version]
 				case 
 					when @max_product_version_id_operating_system < @max_product_version_id_upgrade_method then 0
 					else 1
-				end
+				end
+
 	--		max_product_version_id_operating_system = @max_product_version_id_operating_system,
 	--		max_product_version_id_upgrade_method = @max_product_version_id_upgrade_method
 		from product_versions
@@ -191497,7 +191524,8 @@ BEGIN TRY
 			, sol.modified_date
 			, sol.modified_by
 		FROM dbo.sap_order so
-			INNER JOIN dbo.sap_order_item soi 
+			INNER JOIN dbo.sap_order_item soi 
+
 
 				ON soi.sap_order_id = so.sap_order_id
 			INNER JOIN dbo.sap_order_item_license sol 
@@ -207389,7 +207417,8 @@ CREATE PROCEDURE [dbo].[usp_trial_insert_trial_registration]
 	@license_distribution_method_code char(4) = null,
 	@salesforce_license_id varchar(18) = null,
 	@trial_registration_json varchar(max) = NULL,
-	@opt_in int = null
+	@opt_in int = null,
+	@selected_product_id int = null
 )
 
 AS
@@ -207669,6 +207698,9 @@ nsert sfdc_opportunity_update
 	inner join product_line_product pl
 		on pp.product_id = pl.product_id
 	where pp.partner_product_id = @partner_product_id and p.partner_key = @partner_key
+
+	if @product_id is null and @selected_product_id is not null
+		select @product_id = @selected_product_id
 
 	-- 1.4) @years
 	if @trial_days is not null and @trial_days > 0

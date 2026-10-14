@@ -8,14 +8,14 @@ using ecom_new_api.Services.Skyrise;
 namespace ecom_new_api.Services.MultiTrial;
 
 /// <summary>
-/// Multi Trial submission service — first backend slice.
+/// Multi Trial submission service for registration and trial creation.
 ///
 /// Validates the legacy Multi Trial payload, builds trial_registration_json
 /// (primary product at item_hierarchy_id = 1, selected modules at item_hierarchy_id = 2)
-/// and delegates the insert to usp_trial_insert_trial_registration.
+/// inserts the registration, requests a Skyrise keycode, then delegates trial creation to the
+/// repository.
 ///
-/// Out of scope for this slice (later Multi Trial stages): trial/license creation,
-/// email queue and Salesforce/Marketo processing.
+/// Email queue and Salesforce/Marketo processing remain out of scope.
 /// </summary>
 public sealed class MultiTrialSubmissionService : IMultiTrialSubmissionService
 {
@@ -26,10 +26,9 @@ public sealed class MultiTrialSubmissionService : IMultiTrialSubmissionService
 
     // Legacy PartnerCartTrial::MODULE_CATEGORYS
     private static readonly string[] ValidModuleCategories =
-        ["SDNS", "SECA", "OTSF", "CBEP", "PLRM", "PLRCB", "PLRCS", "OTEDR", "OTMDR"];
+        ["SDNS", "SECA", "OTSF", "CBEP", "PLRM", "PLRCB", "PLRCS"];
 
     private static readonly int[] ValidTrialDays = [14, 30, 60, 90];
-    private static readonly string[] PillrParentModules = ["OTEDR", "OTMDR"];
     private static readonly string[] PillrSubModules = ["PLRM", "PLRCB"];
 
     private const string PillrBaseProduct = "PLRP";
@@ -126,10 +125,41 @@ public sealed class MultiTrialSubmissionService : IMultiTrialSubmissionService
                 keycodeResult.ErrorMessage);
         }
 
+        TrialInsertProcedureResult? trialInsertResult;
+        try
+        {
+            trialInsertResult = await _repo.InsertTrialAsync(
+                result.TrialRegistrationId.Value,
+                keycodeResult.Success ? keycodeResult.Keycode : null,
+                ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                "Trial insertion failed for trial registration {TrialRegistrationId}. ExceptionType={ExceptionType}",
+                result.TrialRegistrationId.Value,
+                ex.GetType().Name);
+            return ServiceResult<MultiTrialSubmissionResponse>.Error("Trial insert could not be completed");
+        }
+
+        if (trialInsertResult is null || trialInsertResult.TrialId <= 0 ||
+            string.IsNullOrWhiteSpace(trialInsertResult.FinalKeycode))
+        {
+            _logger.LogError(
+                "Trial insertion returned no valid trial or persisted keycode for trial registration {TrialRegistrationId}",
+                result.TrialRegistrationId.Value);
+            return ServiceResult<MultiTrialSubmissionResponse>.Error("Trial insert could not be completed");
+        }
+
         return ServiceResult<MultiTrialSubmissionResponse>.Ok(new MultiTrialSubmissionResponse
         {
+            TrialId = trialInsertResult.TrialId,
             TrialRegistrationId = result.TrialRegistrationId.Value,
-            Keycode = keycodeResult.Keycode,
+            Keycode = trialInsertResult.FinalKeycode,
             RequestType = result.RequestType,
             FormType = request.FormType,
             LicenseCategoryName = result.LicenseCategoryName ?? request.LicenseCategoryName,
@@ -187,6 +217,8 @@ public sealed class MultiTrialSubmissionService : IMultiTrialSubmissionService
             errors.Add("license_category_name is required");
         else if (string.Equals(r.LicenseCategoryName, PillrBaseProduct, StringComparison.OrdinalIgnoreCase))
             errors.Add($"license_category_name '{PillrBaseProduct}' cannot be trialed");
+        else if (!string.Equals(r.LicenseCategoryName, "SAEP", StringComparison.OrdinalIgnoreCase))
+            errors.Add("license_category_name must be 'SAEP' for Multi Trial");
 
         if (r.LicenseSeats <= 0)
             errors.Add("license_seats must be a positive integer");
@@ -194,11 +226,8 @@ public sealed class MultiTrialSubmissionService : IMultiTrialSubmissionService
         if (!ValidTrialDays.Contains(r.TrialDays))
             errors.Add($"trial_days must be one of: {string.Join(", ", ValidTrialDays)}");
 
-        if (r.LicenseKeycodeTypeId is not (1 or 3))
-            errors.Add("license_keycode_type_id must be 1 or 3");
-
-        if (!string.IsNullOrWhiteSpace(r.PartnerKey) && !Guid.TryParse(r.PartnerKey, out _))
-            errors.Add("partner_key must be a valid GUID if provided");
+        if (r.LicenseKeycodeTypeId != 3)
+            errors.Add("license_keycode_type_id must be 3 for Multi Trial");
 
         errors.AddRange(ValidateModules(r));
 
@@ -236,12 +265,11 @@ public sealed class MultiTrialSubmissionService : IMultiTrialSubmissionService
             .ToList();
 
         var hasPillrSubModule = categories.Any(c => PillrSubModules.Contains(c, StringComparer.OrdinalIgnoreCase));
-        var hasPillrParent = categories.Any(c => PillrParentModules.Contains(c, StringComparer.OrdinalIgnoreCase));
 
-        if (hasPillrSubModule && !hasPillrParent)
-            errors.Add($"modules {string.Join("/", PillrSubModules)} require a {string.Join(" or ", PillrParentModules)} parent module");
+        if (hasPillrSubModule)
+            errors.Add($"modules {string.Join("/", PillrSubModules)} require a supported parent module");
 
-        if ((hasPillrParent || hasPillrSubModule) && r.TrialDays != PillrRequiredTrialDays)
+        if (hasPillrSubModule && r.TrialDays != PillrRequiredTrialDays)
             errors.Add($"trial_days must be {PillrRequiredTrialDays} when a Pillr module is selected");
 
         return errors;
@@ -289,8 +317,8 @@ public sealed class MultiTrialSubmissionService : IMultiTrialSubmissionService
 
         return JsonSerializer.Serialize(new
         {
-            // The legacy payload always sends an empty keycode here; it is filled in by the
-            // downstream trial-creation slice once Skyrise keycode generation is wired in.
+            // The legacy payload starts with an empty keycode; trial preparation writes the
+            // Skyrise keycode or generates the database fallback before license-service staging.
             keycode = string.Empty,
             license_keycode_type_id = r.LicenseKeycodeTypeId,
             license_distribution_method_code = r.LicenseDistributionMethodCode ?? string.Empty,
@@ -316,7 +344,7 @@ public sealed class MultiTrialSubmissionService : IMultiTrialSubmissionService
             },
             partner = new
             {
-                partner_key = string.IsNullOrWhiteSpace(r.PartnerKey) ? null : r.PartnerKey,
+                partner_key = r.PartnerKey,
                 account_user_name = r.AccountUserName,
                 partner_account_code = r.PartnerAccountCode,
                 partner_product_id = r.PartnerProductId

@@ -18,4 +18,17 @@ public sealed class LicenseSeat
 
     [Column("seats_used")]
     public int SeatsUsed { get; set; }
+
+    [Column("start_date", TypeName = "datetime")]
+    public DateTime? StartDate { get; set; }
+    [Column("end_date", TypeName = "datetime")]
+    public DateTime? EndDate { get; set; }
+    [Column("insert_date", TypeName = "datetime")]
+    public DateTime InsertDate { get; set; }
+    [Column("insert_by"), MaxLength(50)]
+    public string InsertBy { get; set; } = string.Empty;
+    [Column("modified_date", TypeName = "datetime")]
+    public DateTime ModifiedDate { get; set; }
+    [Column("modified_by"), MaxLength(50)]
+    public string ModifiedBy { get; set; } = string.Empty;
 }

@@ -95,6 +95,9 @@ public sealed class BillingModelResponse
 
 public sealed class LicenseOptionsResponse
 {
+    [JsonIgnore]
+    public int? LicenseId { get; init; }
+
     public string Keycode { get; init; } = default!;
     public string? LicenseKey { get; init; }
     public string? LicenseStatus { get; init; }

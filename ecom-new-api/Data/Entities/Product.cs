@@ -11,7 +11,7 @@ public sealed class Product
     public int ProductId { get; set; }
 
     [Column("product_description")]
-    [MaxLength(255)]
+    [MaxLength(100)]
     public string? ProductDescription { get; set; }
 
     [Column("license_keycode_type_id")]
@@ -20,8 +20,11 @@ public sealed class Product
     [Column("product_type_id")]
     public int ProductTypeId { get; set; }
 
+    [Column("uses_keycode")]
+    public int UsesKeycode { get; set; }
+
     [Column("product_family_id")]
-    public int ProductFamilyId { get; set; }
+    public int? ProductFamilyId { get; set; }
 
     // Navigation
     public ProductType? ProductType { get; set; }

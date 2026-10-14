@@ -16,6 +16,15 @@ public sealed class ProductPricing
     [Column("retail_price")]
     public decimal RetailPrice { get; set; }
 
+    [Column("edu_nfp_price")]
+    public decimal? EducationNonProfitPrice { get; set; }
+
+    [Column("govt_price")]
+    public decimal? GovernmentPrice { get; set; }
+
+    [Column("currency_id")]
+    public int CurrencyId { get; set; }
+
     [Column("language_code")]
     [MaxLength(2)]
     public string? LanguageCode { get; set; }

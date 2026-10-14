@@ -11,11 +11,11 @@ public sealed class LicenseCategory
     public byte LicenseCategoryId { get; set; }
 
     [Column("license_category_name")]
-    [MaxLength(50)]
+    [MaxLength(10)]
     public string LicenseCategoryName { get; set; } = default!;
 
     [Column("license_category_description")]
-    [MaxLength(255)]
+    [MaxLength(50)]
     public string? LicenseCategoryDescription { get; set; }
 
     [Column("min_order_quantity")]
