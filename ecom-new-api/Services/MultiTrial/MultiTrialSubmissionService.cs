@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Data.SqlClient;
 using ecom_new_api.Models.Requests;
 using ecom_new_api.Models.Responses;
 using ecom_new_api.Repositories.Trials;
@@ -136,6 +137,19 @@ public sealed class MultiTrialSubmissionService : IMultiTrialSubmissionService
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
+        }
+        catch (SqlException ex)
+        {
+            // SQL messages can contain customer data or keycodes; log server metadata only.
+            _logger.LogError(
+                "Trial insertion SQL failure for trial registration {TrialRegistrationId}. SqlNumber={SqlNumber} SqlProcedure={SqlProcedure} SqlLineNumber={SqlLineNumber} SqlClass={SqlClass} SqlState={SqlState}",
+                result.TrialRegistrationId.Value,
+                ex.Number,
+                ex.Procedure,
+                ex.LineNumber,
+                ex.Class,
+                ex.State);
+            return ServiceResult<MultiTrialSubmissionResponse>.Error("Trial insert could not be completed");
         }
         catch (Exception ex)
         {
@@ -317,8 +331,7 @@ public sealed class MultiTrialSubmissionService : IMultiTrialSubmissionService
 
         return JsonSerializer.Serialize(new
         {
-            // The legacy payload starts with an empty keycode; trial preparation writes the
-            // Skyrise keycode or generates the database fallback before license-service staging.
+            // usp_trial_insert_trial writes the Skyrise keycode or its database fallback into this field.
             keycode = string.Empty,
             license_keycode_type_id = r.LicenseKeycodeTypeId,
             license_distribution_method_code = r.LicenseDistributionMethodCode ?? string.Empty,

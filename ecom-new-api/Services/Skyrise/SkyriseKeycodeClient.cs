@@ -186,6 +186,10 @@ public sealed class SkyriseKeycodeClient : ISkyriseKeycodeClient
                 if (apiErrors is not null)
                     return await FailAsync(request, "skyrise_api_error", ct);
 
+                var bulkItemFailure = InspectBulkItems(responseDocument.RootElement);
+                if (bulkItemFailure is not null)
+                    return await FailAsync(request, bulkItemFailure, ct);
+
                 if (!TryFindLicenseKey(responseDocument.RootElement, out var licenseKey))
                     return await FailAsync(request, "skyrise_response_missing_license_key", ct);
 
@@ -212,7 +216,8 @@ public sealed class SkyriseKeycodeClient : ISkyriseKeycodeClient
                 {
                     if ((string.Equals(property.Name, "licenseKey", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(property.Name, "CreateKey", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(property.Name, "CreateMasterKey", StringComparison.OrdinalIgnoreCase)) &&
+                        string.Equals(property.Name, "CreateMasterKey", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(property.Name, "CreateMaster", StringComparison.OrdinalIgnoreCase)) &&
                         property.Value.ValueKind == JsonValueKind.String &&
                         !string.IsNullOrWhiteSpace(property.Value.GetString()))
                     {
@@ -235,8 +240,8 @@ public sealed class SkyriseKeycodeClient : ISkyriseKeycodeClient
                 // The bulk envelope's per-item "content" field is itself a JSON-encoded string
                 // (e.g. "{\"CreateKey\":\"...\"}"), not a nested object — recurse into it if it
                 // parses as JSON.
-                var raw = element.GetString();
-                if (!string.IsNullOrEmpty(raw) && raw.Length > 1 && raw[0] == '{')
+                var raw = element.GetString()?.Trim();
+                if (!string.IsNullOrEmpty(raw) && raw.Length > 1 && raw[0] is '{' or '[')
                 {
                     try
                     {
@@ -251,6 +256,94 @@ public sealed class SkyriseKeycodeClient : ISkyriseKeycodeClient
                 break;
         }
 
+        return false;
+    }
+
+    // Bulk responses are HTTP 200 even when an item fails; returns a failure category or null.
+    private string? InspectBulkItems(JsonElement root)
+    {
+        var items = root.ValueKind switch
+        {
+            JsonValueKind.Array => root.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.Object).ToList(),
+            JsonValueKind.Object => [root],
+            _ => []
+        };
+
+        for (var index = 0; index < items.Count; index++)
+        {
+            var item = items[index];
+            int? statusCode = TryGetPropertyIgnoreCase(item, "statusCode", out var status) &&
+                              status.ValueKind == JsonValueKind.Number && status.TryGetInt32(out var code)
+                ? code
+                : null;
+            var hasContent = TryGetPropertyIgnoreCase(item, "content", out var content);
+            if (statusCode is null && !hasContent)
+                continue;
+
+            var contentFormat = "missing";
+            string? contentShape = null;
+            string? contentErrors = null;
+            if (hasContent && content.ValueKind != JsonValueKind.String)
+            {
+                contentFormat = content.ValueKind.ToString();
+            }
+            else if (hasContent)
+            {
+                var raw = content.GetString()?.Trim();
+                if (string.IsNullOrEmpty(raw))
+                {
+                    contentFormat = "empty";
+                }
+                else if (raw[0] is not ('{' or '['))
+                {
+                    contentFormat = "non-json";
+                }
+                else
+                {
+                    try
+                    {
+                        using var inner = JsonDocument.Parse(raw);
+                        contentFormat = "json";
+                        contentShape = DescribeJsonShape(inner.RootElement);
+                        contentErrors = DescribeApiErrors(inner.RootElement);
+                    }
+                    catch (JsonException)
+                    {
+                        contentFormat = "invalid-json";
+                    }
+                }
+            }
+
+            _logger.LogInformation(
+                "Skyrise bulk item diagnostics: ItemIndex={ItemIndex} ItemStatusCode={ItemStatusCode} ContentFormat={ContentFormat} ContentJsonProperties={ContentJsonProperties} ContentApiErrors={ContentApiErrors}",
+                index,
+                statusCode?.ToString() ?? "missing",
+                contentFormat,
+                contentShape ?? "none",
+                contentErrors ?? "none");
+
+            if (statusCode is < 200 or > 299)
+                return $"skyrise_item_http_{statusCode}";
+
+            if (contentErrors is not null)
+                return "skyrise_api_error";
+        }
+
+        return null;
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement element, string name, out JsonElement value)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
         return false;
     }
 

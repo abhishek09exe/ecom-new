@@ -134,9 +134,125 @@ public sealed class SkyriseKeycodeClientTests
         Assert.Contains("HttpStatusCode=502", string.Join("\n", logger.Messages));
     }
 
-    private static KeycodeRequest CreateRequest() => new()
+    [Fact]
+    public async Task GenerateAsync_KnownCreateKeyBulkItemReturnsKeyWithoutLoggingIt()
     {
-        LicenseCategory = "WSAV",
+        var responseBody = $$$"""
+            {"bulkId":"b47e57a9-493c-455b-9823-d45c826abf9a","statusCode":200,"content":"{\"CreateKey\":\"{{{SensitiveLicenseKey}}}\"}","headers":{}}
+            """;
+        var (client, handler, logger, _) = CreateClient(HttpStatusCode.OK, responseBody);
+
+        var result = await client.GenerateAsync(CreateRequest());
+
+        Assert.True(result.Success);
+        Assert.Equal(SensitiveLicenseKey, result.Keycode);
+        Assert.Equal(1, handler.CallCount);
+        var logs = string.Join("\n", logger.Messages);
+        Assert.Contains("ItemStatusCode=200", logs);
+        Assert.Contains("$.CreateKey:String", logs);
+        Assert.DoesNotContain(SensitiveLicenseKey, logs, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_CreateMasterKeyBulkArrayReturnsKey()
+    {
+        var responseBody = $$$"""
+            [{"bulkId":"00000000-0000-0000-0000-000000000001","statusCode":200,"content":"{\"CreateMasterKey\":\"{{{SensitiveLicenseKey}}}\"}","headers":{}}]
+            """;
+        var (client, _, logger, _) = CreateClient(HttpStatusCode.OK, responseBody);
+
+        var result = await client.GenerateAsync(CreateRequest("SAEP"));
+
+        Assert.True(result.Success);
+        Assert.Equal(SensitiveLicenseKey, result.Keycode);
+        Assert.DoesNotContain(SensitiveLicenseKey, string.Join("\n", logger.Messages), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_CreateMasterBulkItemReturnsKeyWithoutLoggingIt()
+    {
+        var responseBody = $$$"""
+            [{"bulkId":"00000000-0000-0000-0000-000000000006","statusCode":200,"content":"{\"CreateMaster\":\"{{{SensitiveLicenseKey}}}\"}","headers":{}}]
+            """;
+        var (client, handler, logger, _) = CreateClient(HttpStatusCode.OK, responseBody);
+
+        var result = await client.GenerateAsync(CreateRequest("SAEP"));
+
+        Assert.True(result.Success);
+        Assert.Equal(SensitiveLicenseKey, result.Keycode);
+        Assert.Equal(1, handler.CallCount);
+        var logs = string.Join("\n", logger.Messages);
+        Assert.Contains("$.CreateMaster:String", logs);
+        Assert.DoesNotContain(SensitiveLicenseKey, logs, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_BulkItemFailureStatusReturnsItemStatusAndRedactedDiagnostics()
+    {
+        var responseBody = $$$"""
+            [{"bulkId":"00000000-0000-0000-0000-000000000002","statusCode":400,"content":"{\"errors\":{\"Seats\":[\"{{{ApiErrorMessage}}}\"]},\"title\":\"{{{ApiErrorMessage}}}\"}","headers":{}}]
+            """;
+        var (client, handler, logger, failures) = CreateClient(HttpStatusCode.OK, responseBody);
+
+        var result = await client.GenerateAsync(CreateRequest("SAEP"));
+
+        Assert.False(result.Success);
+        Assert.Equal("skyrise_item_http_400", result.ErrorMessage);
+        Assert.Equal(1, handler.CallCount);
+        var logs = string.Join("\n", logger.Messages);
+        Assert.Contains("ItemStatusCode=400", logs);
+        Assert.Contains("ContentApiErrors=errors:Object", logs);
+        Assert.DoesNotContain(ApiErrorMessage, logs, StringComparison.Ordinal);
+        failures.Verify(repository => repository.RecordFailureAsync(
+            It.IsAny<string>(), It.Is<string>(message => message.Contains("skyrise_item_http_400")),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_SuccessfulBulkItemWithErrorsInContentReturnsApiError()
+    {
+        var responseBody = $$$"""
+            [{"bulkId":"00000000-0000-0000-0000-000000000003","statusCode":200,"content":"{\"errors\":[{\"code\":\"{{{ApiErrorCode}}}\"}]}","headers":{}}]
+            """;
+        var (client, _, logger, _) = CreateClient(HttpStatusCode.OK, responseBody);
+
+        var result = await client.GenerateAsync(CreateRequest());
+
+        Assert.False(result.Success);
+        Assert.Equal("skyrise_api_error", result.ErrorMessage);
+        Assert.DoesNotContain(ApiErrorCode, string.Join("\n", logger.Messages), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_BulkContentWithLeadingWhitespaceReturnsKey()
+    {
+        var responseBody = $$$"""
+            [{"bulkId":"00000000-0000-0000-0000-000000000004","statusCode":200,"content":" \n\t{\"CreateKey\":\"{{{SensitiveLicenseKey}}}\"}","headers":{}}]
+            """;
+        var (client, _, _, _) = CreateClient(HttpStatusCode.OK, responseBody);
+
+        var result = await client.GenerateAsync(CreateRequest());
+
+        Assert.True(result.Success);
+        Assert.Equal(SensitiveLicenseKey, result.Keycode);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_MalformedBulkContentReturnsMissingKeyWithoutThrowing()
+    {
+        var (client, _, logger, _) = CreateClient(HttpStatusCode.OK,
+            """[{"bulkId":"00000000-0000-0000-0000-000000000005","statusCode":200,"content":"{not-json","headers":{}}]""");
+
+        var result = await client.GenerateAsync(CreateRequest());
+
+        Assert.False(result.Success);
+        Assert.Equal("skyrise_response_missing_license_key", result.ErrorMessage);
+        Assert.Contains("ContentFormat=invalid-json", string.Join("\n", logger.Messages));
+    }
+
+    private static KeycodeRequest CreateRequest(string licenseCategory = "WSAV") => new()
+    {
+        LicenseCategory = licenseCategory,
         FirstName = "Test",
         LastName = "User",
         Email = "test@example.invalid",

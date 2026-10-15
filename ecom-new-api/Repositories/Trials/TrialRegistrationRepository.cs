@@ -26,14 +26,12 @@ public sealed class TrialRegistrationRepository : ITrialRegistrationRepository
 {
     private readonly AppDbContext _db;
     private readonly ILogger<TrialRegistrationRepository> _logger;
-    private readonly LicenseServiceStagingRepository _staging;
 
     public TrialRegistrationRepository(AppDbContext db, ILogger<TrialRegistrationRepository> logger,
         LicenseServiceStagingRepository staging)
     {
         _db = db;
         _logger = logger;
-        _staging = staging;
     }
 
     public async Task<IReadOnlyList<int>> InsertModuleLicenseRecordsAsync(
@@ -458,30 +456,6 @@ public sealed class TrialRegistrationRepository : ITrialRegistrationRepository
     {
         var connection = _db.Database.GetDbConnection();
 
-        string serviceJson;
-        await _db.Database.OpenConnectionAsync(ct);
-        try
-        {
-            await using var preparation = connection.CreateCommand();
-            preparation.CommandType = CommandType.StoredProcedure;
-            preparation.CommandText = "dbo.usp_trial_prepare_license_service";
-            preparation.Parameters.Add(new SqlParameter("@trial_registration_id", SqlDbType.Int) { Value = trialRegistrationId });
-            preparation.Parameters.Add(new SqlParameter("@keycode", SqlDbType.VarChar, 40) { Value = (object?)keycode ?? DBNull.Value });
-            await using var prepared = await preparation.ExecuteReaderAsync(ct);
-            if (!await prepared.ReadAsync(ct))
-                throw new InvalidOperationException("Trial license-service preparation returned no result.");
-            keycode = prepared.GetString(prepared.GetOrdinal("keycode"));
-            serviceJson = prepared.GetString(prepared.GetOrdinal("service_json"));
-        }
-        finally
-        {
-            await _db.Database.CloseConnectionAsync();
-        }
-
-        var stagedServiceId = await _staging.StageLicenseCreateAsync(serviceJson, ct);
-        _logger.LogInformation("Staged license_create service {LicenseServiceId} for trial registration {TrialRegistrationId}",
-            stagedServiceId, trialRegistrationId);
-
         await using var command = connection.CreateCommand();
         command.CommandType = CommandType.StoredProcedure;
         command.CommandText = "dbo.usp_trial_insert_trial";
@@ -497,10 +471,6 @@ public sealed class TrialRegistrationRepository : ITrialRegistrationRepository
         command.Parameters.Add(new SqlParameter("@account_order_json", SqlDbType.VarChar, -1)
         {
             Value = DBNull.Value
-        });
-        command.Parameters.Add(new SqlParameter("@staged_license_service_id", SqlDbType.Int)
-        {
-            Value = stagedServiceId
         });
 
         await _db.Database.OpenConnectionAsync(ct);
