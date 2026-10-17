@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace ecom_new_api.Models.Requests;
@@ -140,4 +141,7 @@ public sealed class MultiTrialSubmissionRequest
 
     /// <summary>sfdc.salesforce_license_id</summary>
     public string? SalesforceLicenseId { get; init; }
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? AdditionalFields { get; init; }
 }

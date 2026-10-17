@@ -31,6 +31,7 @@ public sealed class MultiTrialController : ControllerBase
     private readonly IFormResponseRepository _formResponseRepository;
     private readonly ILicenseOptionsRepository _licenseOptionsRepository;
     private readonly ILogger<MultiTrialController> _logger;
+    private readonly IMultiTrialNotificationService? _notifications;
     private static readonly JsonSerializerOptions LegacyFormJsonOptions = new()
     {
         PropertyNamingPolicy = SnakeCaseNamingPolicy.Instance
@@ -40,12 +41,14 @@ public sealed class MultiTrialController : ControllerBase
         IMultiTrialSubmissionService service,
         IFormResponseRepository formResponseRepository,
         ILicenseOptionsRepository licenseOptionsRepository,
-        ILogger<MultiTrialController> logger)
+        ILogger<MultiTrialController> logger,
+        IMultiTrialNotificationService? notifications = null)
     {
         _service = service;
         _formResponseRepository = formResponseRepository;
         _licenseOptionsRepository = licenseOptionsRepository;
         _logger = logger;
+        _notifications = notifications;
     }
 
     /// <summary>
@@ -104,6 +107,11 @@ public sealed class MultiTrialController : ControllerBase
         {
             if (successResponse is not null)
                 return await successResponse(result.Data!);
+
+            if (_notifications is not null)
+                await _notifications.CompleteAsync(request, result.Data!,
+                    JsonSerializer.Serialize(request, LegacyFormJsonOptions),
+                    HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.Referer.ToString(), null, ct);
 
             return StatusCode(StatusCodes.Status201Created,
                 ApiResponse<MultiTrialSubmissionResponse>.Success(result.Data!));
@@ -201,6 +209,10 @@ public sealed class MultiTrialController : ControllerBase
                 ct);
             if (string.IsNullOrWhiteSpace(responseKey))
                 return LegacyResponseFailure("The form response key was not returned by persistence.");
+
+            if (_notifications is not null)
+                await _notifications.CompleteAsync(request, result, formJson, snapshot.IpAddress,
+                    snapshot.FormUrl, formSubmitId.Value, ct);
 
             return StatusCode(StatusCodes.Status201Created, new LegacyFormSubmissionResponse
             {

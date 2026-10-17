@@ -10,7 +10,10 @@ using ecom_new_api.Services.MultiTrial;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
 using Moq;
 using Xunit;
@@ -51,6 +54,105 @@ public sealed class MultiTrialControllerTests
         FormType = formType,
         Modules = [new MultiTrialModuleRequest { LicenseCategoryName = "SDNS", LicenseSeats = 100 }]
     };
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CreateSubmission_OnlySuccessfulSubmissionsInvokeNotificationHook(bool success)
+    {
+        var request = Request();
+        var response = new MultiTrialSubmissionResponse { TrialId = 7, TrialRegistrationId = 8, Keycode = "LOCAL-TEST" };
+        _serviceMock.Setup(service => service.SubmitAsync(request, default)).ReturnsAsync(success
+            ? ServiceResult<MultiTrialSubmissionResponse>.Ok(response)
+            : ServiceResult<MultiTrialSubmissionResponse>.Invalid(["Duplicate registration"]));
+        var notifications = new Mock<IMultiTrialNotificationService>();
+        string? snapshot = null;
+        notifications.Setup(service => service.CompleteAsync(request, response, It.IsAny<string>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), null, default))
+            .Callback<MultiTrialSubmissionRequest, MultiTrialSubmissionResponse, string, string?, string?, int?, CancellationToken>(
+                (_, _, json, _, _, _, _) => snapshot = json)
+            .Returns(Task.CompletedTask);
+        var controller = new MultiTrialController(_serviceMock.Object, _formResponseMock.Object,
+            _licenseOptionsMock.Object, NullLogger<MultiTrialController>.Instance, notifications.Object)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+
+        var result = Assert.IsAssignableFrom<ObjectResult>(await controller.CreateSubmission(request, default));
+        Assert.Equal(success ? StatusCodes.Status201Created : StatusCodes.Status422UnprocessableEntity, result.StatusCode);
+        if (success)
+        {
+            Assert.Same(response, Assert.IsType<ApiResponse<MultiTrialSubmissionResponse>>(result.Value).Data);
+            using var document = JsonDocument.Parse(snapshot!);
+            Assert.Equal(request.CustomerEmail, document.RootElement.GetProperty("customer_email").GetString());
+        }
+        else
+        {
+            notifications.VerifyNoOtherCalls();
+        }
+    }
+
+    [Theory]
+    [InlineData("EmailEnabled")]
+    [InlineData("MarketingEnabled")]
+    public async Task CreateSubmission_MalformedNotificationConfigurationPreserves201(string malformedSetting)
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["MultiTrialNotifications:" + malformedSetting] = "not-a-boolean"
+        }).Build();
+        using var provider = new ServiceCollection()
+            .Configure<MultiTrialNotificationOptions>(configuration.GetSection("MultiTrialNotifications"))
+            .BuildServiceProvider();
+        var licenses = new Mock<ILicenseOptionsRepository>(MockBehavior.Strict);
+        var forms = new Mock<IFormResponseRepository>(MockBehavior.Strict);
+        var queue = new Mock<ecom_new_api.Repositories.Trials.IMultiTrialNotificationRepository>(MockBehavior.Strict);
+        var notifications = new MultiTrialNotificationService(
+            provider.GetRequiredService<IOptions<MultiTrialNotificationOptions>>(), licenses.Object, forms.Object,
+            queue.Object, NullLogger<MultiTrialNotificationService>.Instance);
+        var request = Request();
+        var response = new MultiTrialSubmissionResponse { TrialId = 7, TrialRegistrationId = 8, Keycode = "LOCAL-TEST" };
+        _serviceMock.Setup(service => service.SubmitAsync(request, default))
+            .ReturnsAsync(ServiceResult<MultiTrialSubmissionResponse>.Ok(response));
+        var controller = new MultiTrialController(_serviceMock.Object, forms.Object, licenses.Object,
+            NullLogger<MultiTrialController>.Instance, notifications)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+
+        var result = Assert.IsType<ObjectResult>(await controller.CreateSubmission(request, default));
+        Assert.Equal(StatusCodes.Status201Created, result.StatusCode);
+        Assert.Same(response, Assert.IsType<ApiResponse<MultiTrialSubmissionResponse>>(result.Value).Data);
+        licenses.VerifyNoOtherCalls();
+        forms.VerifyNoOtherCalls();
+        queue.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task CreateSubmission_EmailNotificationFailurePreserves201()
+    {
+        var request = Request();
+        var response = new MultiTrialSubmissionResponse { TrialId = 7, TrialRegistrationId = 8, Keycode = "LOCAL-TEST" };
+        _serviceMock.Setup(service => service.SubmitAsync(request, default))
+            .ReturnsAsync(ServiceResult<MultiTrialSubmissionResponse>.Ok(response));
+        _licenseOptionsMock.Setup(repository => repository.SelectLicenseOptionsAsync("LOCAL-TEST", null, default))
+            .ThrowsAsync(new InvalidOperationException("Local notification failure"));
+        var queue = new Mock<ecom_new_api.Repositories.Trials.IMultiTrialNotificationRepository>(MockBehavior.Strict);
+        var notifications = new MultiTrialNotificationService(
+            Options.Create(new MultiTrialNotificationOptions { EmailEnabled = true }),
+            _licenseOptionsMock.Object, _formResponseMock.Object, queue.Object,
+            NullLogger<MultiTrialNotificationService>.Instance);
+        var controller = new MultiTrialController(_serviceMock.Object, _formResponseMock.Object,
+            _licenseOptionsMock.Object, NullLogger<MultiTrialController>.Instance, notifications)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+
+        var result = Assert.IsType<ObjectResult>(await controller.CreateSubmission(request, default));
+        Assert.Equal(StatusCodes.Status201Created, result.StatusCode);
+        Assert.Same(response, Assert.IsType<ApiResponse<MultiTrialSubmissionResponse>>(result.Value).Data);
+        queue.VerifyNoOtherCalls();
+    }
 
     [Fact]
     public async Task CreateSubmission_ValidRequest_Returns201WithEnvelope()

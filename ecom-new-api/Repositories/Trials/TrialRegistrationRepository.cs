@@ -501,26 +501,93 @@ public sealed class TrialRegistrationRepository : ITrialRegistrationRepository
             await using var keycodeCommand = connection.CreateCommand();
             keycodeCommand.CommandType = CommandType.Text;
             keycodeCommand.CommandText = @"
-                SELECT keycode
-                FROM trial_registration
-                WHERE trial_registration_id = @trial_registration_id";
+                SELECT r.keycode, l.license_id, j.trial_registration_json
+                FROM dbo.trial_registration r
+                INNER JOIN dbo.trial t ON t.trial_registration_id = r.trial_registration_id
+                INNER JOIN dbo.license l ON l.license_id = t.license_id AND l.keycode = r.keycode
+                INNER JOIN dbo.trial_registration_json j ON j.trial_registration_id = r.trial_registration_id
+                WHERE r.trial_registration_id = @trial_registration_id AND t.trial_id = @trial_id";
             keycodeCommand.Parameters.Add(new SqlParameter("@trial_registration_id", SqlDbType.Int)
             {
                 Value = trialRegistrationId
             });
+            keycodeCommand.Parameters.Add(new SqlParameter("@trial_id", SqlDbType.Int)
+            {
+                Value = trialId
+            });
 
-            var persistedKeycode = await keycodeCommand.ExecuteScalarAsync(ct);
+            await using var persisted = await keycodeCommand.ExecuteReaderAsync(ct);
+            if (!await persisted.ReadAsync(ct))
+                return null;
+
+            var persistedKeycode = persisted.IsDBNull(0) ? null : persisted.GetString(0);
+            var licenseId = persisted.GetInt32(1);
+            var registrationJson = persisted.GetString(2);
+            await persisted.CloseAsync();
+
+            if (!await VerifyPersistedModulesAsync(licenseId, registrationJson, ct))
+            {
+                _logger.LogError("Trial module persistence verification failed for trial registration {TrialRegistrationId}",
+                    trialRegistrationId);
+                return null;
+            }
 
             return new TrialInsertProcedureResult
             {
                 TrialId = trialId,
-                FinalKeycode = persistedKeycode is DBNull or null ? null : persistedKeycode.ToString()
+                FinalKeycode = persistedKeycode
             };
         }
         finally
         {
             await _db.Database.CloseConnectionAsync();
         }
+    }
+
+    public async Task<bool> VerifyPersistedModulesAsync(
+        int licenseId, string registrationJson, CancellationToken ct = default)
+    {
+        var payload = JsonSerializer.Deserialize<LicenseCreationPayload>(registrationJson);
+        if (payload?.Categories is null)
+            return false;
+
+        foreach (var category in payload.Categories.Where(category => category.HierarchyId == 2 &&
+            (string.Equals(category.Name, "SDNS", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(category.Name, "SECA", StringComparison.OrdinalIgnoreCase))))
+        {
+            var categoryName = category.Name!.ToUpperInvariant();
+            var expectedModuleIds = await (
+                from mapping in _db.LicenseModuleCategory.AsNoTracking()
+                join module in _db.LicenseModule.AsNoTracking() on mapping.LicenseModuleId equals module.LicenseModuleId
+                join configuredCategory in _db.LicenseCategory.AsNoTracking()
+                    on mapping.LicenseCategoryId equals configuredCategory.LicenseCategoryId
+                where configuredCategory.LicenseCategoryName.ToUpper() == categoryName && module.LicenseModuleClassId == 3
+                select module.LicenseModuleId).Distinct().ToListAsync(ct);
+            if (expectedModuleIds.Count == 0)
+                return false;
+
+            var trialTypeIds = await _db.LicenseModuleType.AsNoTracking()
+                .Where(type => type.LicenseModuleTypeName == "trial")
+                .Select(type => type.LicenseModuleTypeId).ToListAsync(ct);
+            if (trialTypeIds.Count != 1)
+                return false;
+
+            var trialTypeId = trialTypeIds[0];
+            var actualModules = await _db.LicenseModuleLicense.AsNoTracking()
+                .Where(module => module.LicenseId == licenseId && expectedModuleIds.Contains(module.LicenseModuleId))
+                .ToListAsync(ct);
+            foreach (var moduleId in expectedModuleIds)
+            {
+                var matches = actualModules.Where(module => module.LicenseModuleId == moduleId &&
+                    module.LicenseModuleTypeId == trialTypeId && module.ModuleSeats == category.Seats &&
+                    module.StartDate == category.StartDate && module.EndDate == category.ExpirationDate &&
+                    module.LicenseStatusId == 1).ToList();
+                if (matches.Count != 1)
+                    return false;
+            }
+        }
+
+        return true;
     }
 
     public async Task<TrialProductSelection?> SelectTrialProductAsync(

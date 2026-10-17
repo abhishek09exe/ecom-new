@@ -66,6 +66,7 @@ builder.Services.AddScoped<IPricingRepository, PricingRepository>();
 builder.Services.AddScoped<ISkyriseFailureRepository, SkyriseFailureRepository>();
 builder.Services.AddScoped<ITrialRegistrationRepository, TrialRegistrationRepository>();
 builder.Services.AddScoped<LicenseServiceStagingRepository>();
+builder.Services.AddScoped<IMultiTrialNotificationRepository, MultiTrialNotificationRepository>();
 
 // ── Services ────────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ICartOrderService, CartOrderService>();
@@ -74,6 +75,8 @@ builder.Services.AddScoped<MessageKeyService>();
 builder.Services.AddScoped<IPricingService, PricingService>();
 builder.Services.AddScoped<ILicenseOptionsService, LicenseOptionsService>();
 builder.Services.AddScoped<IMultiTrialSubmissionService, MultiTrialSubmissionService>();
+builder.Services.Configure<MultiTrialNotificationOptions>(builder.Configuration.GetSection("MultiTrialNotifications"));
+builder.Services.AddScoped<IMultiTrialNotificationService, MultiTrialNotificationService>();
 builder.Services.Configure<WebbulaOptions>(builder.Configuration.GetSection(WebbulaOptions.SectionName));
 builder.Services.AddHttpClient<IEmailVerificationService, WebbulaEmailVerificationService>();
 
@@ -97,6 +100,9 @@ builder.Services.AddHttpClient<ISkyriseKeycodeClient, SkyriseKeycodeClient>();
 //   builder.Services.AddScoped<LocaleMiddleware>();          // X-CSI-LOCALE header
 
 var app = builder.Build();
+app.Logger.LogInformation(
+    "Multi Trial EmailEnabled={EmailEnabled}",
+    app.Configuration.GetValue<bool>("MultiTrialNotifications:EmailEnabled"));
 
 // ── HTTP pipeline ────────────────────────────────────────────────────────────────
 if (app.Environment.IsDevelopment())

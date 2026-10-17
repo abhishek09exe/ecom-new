@@ -317,6 +317,60 @@ public sealed class TrialRegistrationRepositoryTests : IDisposable
         Assert.Equal(10.50m, result.NetPrice);
     }
 
+    [Theory]
+    [InlineData("SDNS")]
+    [InlineData("SECA")]
+    public async Task VerifyPersistedModulesAsync_RequiresAllConfiguredModuleRecords(string category)
+    {
+        await using var context = CreateContext();
+        context.License.Add(new License { LicenseId = 7, Keycode = "LOCAL-TEST", ProductLineId = 300 });
+        context.LicenseCategory.Add(new LicenseCategory { LicenseCategoryId = 221, LicenseCategoryName = category });
+        context.LicenseModuleType.Add(new LicenseModuleType { LicenseModuleTypeId = 2, LicenseModuleTypeName = "trial" });
+        context.LicenseModule.AddRange(
+            new LicenseModule { LicenseModuleId = 10, LicenseModuleClassId = 3 },
+            new LicenseModule { LicenseModuleId = 11, LicenseModuleClassId = 3 });
+        context.LicenseModuleCategory.AddRange(
+            new LicenseModuleCategory { LicenseCategoryId = 221, LicenseModuleId = 10 },
+            new LicenseModuleCategory { LicenseCategoryId = 221, LicenseModuleId = 11 });
+        await context.SaveChangesAsync();
+        var repository = CreateRepository(context);
+        var json = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            license_category = new[] { new { license_category_name = category, item_hierarchy_id = 2,
+                license_seats = 5, start_date = "2026-10-15", expiration_date = "2026-11-14" } }
+        });
+
+        Assert.False(await repository.VerifyPersistedModulesAsync(7, json));
+        foreach (var moduleId in new byte[] { 10, 11 })
+        {
+            context.LicenseModuleLicense.Add(new LicenseModuleLicense
+            {
+                LicenseId = 7, LicenseModuleId = moduleId, LicenseModuleTypeId = 2, ModuleSeats = 5,
+                StartDate = new DateTime(2026, 10, 15), EndDate = new DateTime(2026, 11, 14), LicenseStatusId = 1
+            });
+        }
+        await context.SaveChangesAsync();
+        Assert.True(await repository.VerifyPersistedModulesAsync(7, json));
+
+        var persisted = await context.LicenseModuleLicense.FirstAsync();
+        persisted.ModuleSeats = 4;
+        await context.SaveChangesAsync();
+        Assert.False(await repository.VerifyPersistedModulesAsync(7, json));
+        persisted.ModuleSeats = 5;
+        persisted.EndDate = new DateTime(2026, 11, 13);
+        await context.SaveChangesAsync();
+        Assert.False(await repository.VerifyPersistedModulesAsync(7, json));
+    }
+
+    [Fact]
+    public async Task VerifyPersistedModulesAsync_NoSelectedModulesDoesNotRequireModuleConfiguration()
+    {
+        await using var context = CreateContext();
+        var repository = CreateRepository(context);
+        Assert.True(await repository.VerifyPersistedModulesAsync(7, "{\"license_category\":[]}"));
+        Assert.False(await repository.VerifyPersistedModulesAsync(7, "{}"));
+    }
+
     private AppDbContext CreateContext() => new(_options);
 
     private static TrialRegistrationRepository CreateRepository(AppDbContext context) =>

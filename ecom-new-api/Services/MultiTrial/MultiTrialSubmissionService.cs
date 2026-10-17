@@ -16,7 +16,7 @@ namespace ecom_new_api.Services.MultiTrial;
 /// inserts the registration, requests a Skyrise keycode, then delegates trial creation to the
 /// repository.
 ///
-/// Email queue and Salesforce/Marketo processing remain out of scope.
+/// Optional legacy notifications run in the controller after successful persistence.
 /// </summary>
 public sealed class MultiTrialSubmissionService : IMultiTrialSubmissionService
 {

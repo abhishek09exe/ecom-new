@@ -746,3 +746,27 @@ The .NET implementation must reproduce the existing Multi Trial business behavio
 > **Create SAEP as the primary 30-day GSM trial, attach the selected SDNS/SECA/EDR/MDR products as secondary trial modules, preserve seats and EDR/MDR vault information, generate the required keycode, perform email verification, preserve notification and downstream CRM/marketing processing, and return a compatible response to the existing frontend.**
 
 The migration should preserve the existing functional behavior while moving the relevant application/database business logic into the new .NET/EF Core implementation.
+
+## Local Migration Implementation (2026-10-15)
+
+- The trial readback now requires a linked license whose keycode matches the registration.
+- Selected SDNS/SECA modules are checked against configured class-3 mappings and persisted trial type, seats, dates, and active status. This verifies existing SQL creation; it does not insert replacement module records.
+- English SAEP master, SDNS, and SECA confirmation content/layout were ported from the neighboring legacy checkout's `li3_wr/resources/mail_templates/trials/` templates. Non-English notification rendering is not enabled by this implementation.
+- Email persistence reuses `dbo.usp_insert_email_receipts_dl_instructions`, campaign `email_dl_instructions_business_trials`, and the existing delivery infrastructure. It does not send SMTP/API mail or directly write an ExactTarget queue.
+- Marketing reuses `dbo.usp_sfdc_insert_sfdc_opportunity_update` with `update_marketo` and JSON containing `form_submit_id` and `trial_id`. Additional JSON request fields are retained in the form snapshot for the existing worker.
+- Notifications run only after successful core persistence. Failures are logged without customer data or keycodes and do not turn a created trial into a failed submission, matching the legacy best-effort behavior. The JSON success envelope remains unchanged.
+
+### Deployment Gates
+
+Both flags default to false and must remain disabled on shared QA until the owning team approves enqueueing:
+
+```text
+MultiTrialNotifications__EmailEnabled
+MultiTrialNotifications__MarketingEnabled
+```
+
+Before enabling, the DBA/deployment owner must confirm the deployed procedure definitions, the email campaign and `update_marketo` template mappings, existing email/marketing worker ownership and configuration, and permitted recipient handling. No worker or delivery configuration was invented or migrated here.
+
+Persisted QA trial/license/module data and actual email delivery/CRM processing remain unverified by local tests. Template rendering and notification orchestration are covered using mocks; module verification uses isolated SQLite data. No live-service tests or real registrations are needed for these checks.
+
+For JSON marketing, the form snapshot is currently saved after trial creation, not before validation as in PHP. Failed-submission auditing and durable notification retry/deduplication remain follow-up work; do not retry an entire registration to resend notifications.
