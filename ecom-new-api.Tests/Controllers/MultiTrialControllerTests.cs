@@ -242,7 +242,7 @@ public sealed class MultiTrialControllerTests
     }
 
     [Fact]
-    public void CreateSubmission_ExposesExistingAndLegacyRoutesAndJsonContentType()
+    public void CreateSubmission_ExposesLegacyRouteAndJsonContentType()
     {
         var action = typeof(MultiTrialController).GetMethod(nameof(MultiTrialController.CreateSubmission))!;
         var postRoutes = action.GetCustomAttributes(typeof(HttpPostAttribute), inherit: true)
@@ -253,7 +253,6 @@ public sealed class MultiTrialControllerTests
             .Cast<ConsumesAttribute>()
             .Single();
 
-        Assert.Contains("submissions", postRoutes);
         Assert.Contains("~/forms/submissions", postRoutes);
         Assert.Contains("application/json", consumes.ContentTypes);
 

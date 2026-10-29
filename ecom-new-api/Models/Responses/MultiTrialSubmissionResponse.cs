@@ -3,7 +3,7 @@ namespace ecom_new_api.Models.Responses;
 using System.Text.Json.Serialization;
 
 /// <summary>
-/// Response for POST /multi-trial/submissions.
+/// Response for POST /forms/submissions.
 ///
 /// Column source: the success result set of usp_trial_insert_trial_registration plus the
 /// synchronous Skyrise keycode-generation result.

@@ -55,7 +55,6 @@ public sealed class MultiTrialController : ControllerBase
     /// Creates the trial registration for a Multi Trial submission
     /// (primary product plus the selected secondary modules).
     /// </summary>
-    [HttpPost("submissions")]
     [HttpPost("~/forms/submissions")]
     [Consumes("application/json")]
     [ProducesResponseType(typeof(ApiResponse<MultiTrialSubmissionResponse>), StatusCodes.Status201Created)]
